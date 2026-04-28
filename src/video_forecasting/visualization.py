@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from .models.diffusion import sample_latent_diffusion
 from .models.flow_matching import FlowMatchingUtils, sample_latent_flow_matching
+from .models.mdn_rnn import predict_next_frame, predict_next_frame_vector
 from .models.transformer import generate_transformer_rollout
 
 
@@ -350,6 +351,7 @@ def visualize_mdn_predictions(
     num_context_frames=3,
     device="cpu",
     latent_shape=None,
+    latent_dim=None,
 ):
     """
     Visualize MDN-RNN predictions against ground truth.
@@ -363,8 +365,17 @@ def visualize_mdn_predictions(
                           NOTE: This does NOT affect prediction - the model uses ALL
                           frames in the sequence to build hidden state.
         device: Device to run on
-        latent_shape: Shape of latent representation
+        latent_shape: Shape of spatial latent ``(C, H, W)`` (use with spatial VAE)
+        latent_dim: 1D latent size (use with vector VAE / 1D latent MDN-RNN)
     """
+    if latent_shape is not None and latent_dim is not None:
+        raise ValueError("Pass only one of latent_shape or latent_dim.")
+    if latent_shape is None and latent_dim is None:
+        raise ValueError(
+            "visualize_mdn_predictions requires latent_shape (spatial VAE) or "
+            "latent_dim (vector VAE)."
+        )
+
     mdn_rnn.eval()
     vae.eval()
 
@@ -402,9 +413,14 @@ def visualize_mdn_predictions(
 
                 for t in range(T - 1):  # Process frames 0 to T-2
                     # Each call processes frame t and predicts frame t+1
-                    pred, hidden = predict_next_frame(
-                        mdn_rnn, vae, sequence[t], latent_shape, hidden
-                    )
+                    if latent_dim is not None:
+                        pred, hidden = predict_next_frame_vector(
+                            mdn_rnn, vae, sequence[t], latent_dim, hidden
+                        )
+                    else:
+                        pred, hidden = predict_next_frame(
+                            mdn_rnn, vae, sequence[t], latent_shape, hidden
+                        )
                     # Keep the last prediction (which is frame T-1 when t = T-2)
                     if t == T - 2:
                         predicted_frame = pred
