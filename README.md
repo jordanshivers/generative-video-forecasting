@@ -47,8 +47,6 @@ notebooks/
 
 The forecasting notebooks cover pixel-space flow matching, pixel-space diffusion, SimVP, spatial latent flow matching, 1D latent flow matching, 1D latent diffusion, causal latent transformers, MDN-RNNs over spatial latents, and MDN-RNNs over 1D VAE latents. 
 
-Each training notebook defines `RETRAIN = False` in the setup cell. Leave it as `False` to reuse existing checkpoints from that notebook's output directory, or set it to `True` to ignore existing checkpoints and train fresh models.
-
 
 ## Package Layout
 
