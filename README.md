@@ -12,8 +12,6 @@ The current datasets are:
 
 ## Notebooks
 
-Notebooks are grouped by dataset and are intended to be run top to bottom.
-
 ```text
 notebooks/
   moving_mnist/
