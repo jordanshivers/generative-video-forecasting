@@ -1,9 +1,14 @@
 This repository implements several approaches for learned forecasting of small video datasets. The shared Python package under `src/video_forecasting/` contains dataset loaders/generators, VAE variants, forecasting models, training loops, runtime helpers, and visualization code.
 
+
 The current datasets are:
 
 - **Moving MNIST**, introduced in [Unsupervised Learning of Video Representations using LSTMs](https://doi.org/10.48550/arXiv.1502.04681).
-- **Elastic disk dynamics**, a generated dataset of grayscale movies showing circular particles moving in a 2D box with reflecting or periodic boundaries. The simulation uses simple equal-mass elastic collisions and wall/periodic boundary handling. 
+- **Elastic disk dynamics**, a generated dataset of grayscale movies showing circular particles moving in a 2D box with reflecting or periodic boundaries. The simulation uses simple equal-mass elastic collisions and wall/periodic boundary handling.
+
+| Moving MNIST | Elastic disk dynamics |
+|:------------:|:---------------------:|
+| ![Sample Moving MNIST sequence](moving_mnist_sequence.gif) | ![Sample elastic disk sequence](elastic_disks_sequence.gif) |
 
 ## Notebooks
 
