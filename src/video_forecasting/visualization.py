@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .models.diffusion import sample_latent_diffusion
-from .models.flow_matching import sample_latent_flow_matching
+from .models.flow_matching import FlowMatchingUtils, sample_latent_flow_matching
 from .models.transformer import generate_transformer_rollout
 
 
@@ -24,11 +24,10 @@ def set_output_dir(path):
     return OUTPUT_DIR
 
 
-# Helper function to save reconstruction frames during training (for GIF creation)
 def save_reconstruction_frame(
     vae, dataset, sample_indices, epoch, save_dir, device="cpu"
 ):
-    """Save a single reconstruction frame for GIF creation."""
+    """Save a reconstruction snapshot for the VAE training movie."""
     vae.eval()
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -53,21 +52,17 @@ def save_reconstruction_frame(
             recon_np = reconstructed.squeeze(0).cpu().numpy()
             # Compute MSE
             mse = np.mean((orig_np - recon_np) ** 2)
-            # Display images as RGB
-            if orig_np.shape[0] == 1:  # Grayscale (single channel)
-                # Copy single channel to all RGB channels
+            if orig_np.shape[0] == 1:
                 orig_rgb = np.stack([orig_np[0]] * 3, axis=2)
                 recon_rgb = np.stack([recon_np[0]] * 3, axis=2)
-            elif orig_np.shape[0] == 2:  # Two-channel (original biological data)
-                # Map two channels to RGB (channel 0 -> R, channel 1 -> G, B=0)
+            elif orig_np.shape[0] == 2:
                 orig_rgb = np.zeros((orig_np.shape[1], orig_np.shape[2], 3))
                 orig_rgb[:, :, 0] = orig_np[0]
                 orig_rgb[:, :, 1] = orig_np[1]
                 recon_rgb = np.zeros((recon_np.shape[1], recon_np.shape[2], 3))
                 recon_rgb[:, :, 0] = recon_np[0]
                 recon_rgb[:, :, 1] = recon_np[1]
-            else:  # Multi-channel or RGB
-                # Use first channel for all RGB channels
+            else:
                 orig_rgb = np.stack([orig_np[0]] * 3, axis=2)
                 recon_rgb = np.stack([recon_np[0]] * 3, axis=2)
             # Plot original
@@ -87,8 +82,6 @@ def save_reconstruction_frame(
     return frame_path
 
 
-# Visualize VAE Reconstructions
-# This cell shows how well the VAE can encode and decode images
 def visualize_vae_reconstructions(
     vae, dataset, num_samples=8, device="cpu", title_prefix=""
 ):
@@ -126,22 +119,17 @@ def visualize_vae_reconstructions(
             # Compute MSE in [0, 1] space
             mse = np.mean((orig_np - recon_np) ** 2)
             total_mse += mse
-            # Already in [0, 1], so plot directly
-            # Display images as RGB
-            if orig_np.shape[0] == 1:  # Grayscale (single channel)
-                # Copy single channel to all RGB channels
+            if orig_np.shape[0] == 1:
                 orig_rgb = np.stack([orig_np[0]] * 3, axis=2)
                 recon_rgb = np.stack([recon_np[0]] * 3, axis=2)
-            elif orig_np.shape[0] == 2:  # Two-channel (original biological data)
-                # Map two channels to RGB (channel 0 -> R, channel 1 -> G, B=0)
+            elif orig_np.shape[0] == 2:
                 orig_rgb = np.zeros((orig_np.shape[1], orig_np.shape[2], 3))
                 orig_rgb[:, :, 0] = orig_np[0]
                 orig_rgb[:, :, 1] = orig_np[1]
                 recon_rgb = np.zeros((recon_np.shape[1], recon_np.shape[2], 3))
                 recon_rgb[:, :, 0] = recon_np[0]
                 recon_rgb[:, :, 1] = recon_np[1]
-            else:  # Multi-channel or RGB
-                # Use first channel for all RGB channels
+            else:
                 orig_rgb = np.stack([orig_np[0]] * 3, axis=2)
                 recon_rgb = np.stack([recon_np[0]] * 3, axis=2)
             # Plot original
@@ -364,7 +352,7 @@ def visualize_mdn_predictions(
     latent_shape=None,
 ):
     """
-    Visualize predictions vs ground truth (World Models style).
+    Visualize MDN-RNN predictions against ground truth.
 
     Args:
         mdn_rnn: Trained MDN-RNN model
@@ -495,8 +483,7 @@ def generate_flow_rollout_movie(
     flow_matching_model,
     vae,
     test_dataset,
-    sequence=None,  # Sequence array [T, C, H, W] for Moving MNIST
-    tif_path=None,  # Path to TIF file (for backward compatibility)
+    sequence=None,
     dataset_type="moving_mnist",
     frame_separation=5,
     start_frame=0,
@@ -505,7 +492,7 @@ def generate_flow_rollout_movie(
     fps=10,
     output_dir=str(OUTPUT_DIR / "output_mp4s"),
     num_inference_steps=25,
-    use_ddim=True,  # Ignored for flow matching but kept for compatibility
+    use_ddim=True,
 ):
     """
     Generate rollout movie showing iterative predictions using Flow Matching.
@@ -513,9 +500,8 @@ def generate_flow_rollout_movie(
         flow_matching_model: Trained velocity prediction model
         vae: Trained VAE
         test_dataset: Test dataset (for normalization parameters)
-        sequence: Sequence array [T, C, H, W] for Moving MNIST (if None, uses tif_path)
-        tif_path: Path to TIF file for rollout (if None, uses sequence)
-        dataset_type: 'moving_mnist' or 'pulsation' (for normalization)
+        sequence: Sequence array [T, C, H, W].
+        dataset_type: Dataset label used in output naming.
         frame_separation: Frame separation m used during training
         start_frame: Starting frame index (default: 0)
         num_predictions: Number of prediction steps to generate
@@ -523,43 +509,22 @@ def generate_flow_rollout_movie(
         fps: Frames per second for output video
         output_dir: Directory to save output videos
         num_inference_steps: Number of Euler integration steps
-        use_ddim: Ignored
+        use_ddim: Accepted for API consistency; flow matching does not use it.
     Returns:
         Path to saved video file
     """
     flow_matching_model.eval()
     vae.eval()
-    # Load sequence (from array or TIF file)
-    if sequence is not None:
-        # Use provided sequence array
-        data_array = sequence  # Already in [T, C, H, W] format
-        print(f"Using provided sequence with shape {data_array.shape}...")
-    elif tif_path is not None:
-        # Load from TIF file
-        print(f"Loading {tif_path.name}...")
-        image_sequence = tifffile.imread(str(tif_path))
-        # Handle different TIF formats
-        if image_sequence.ndim == 4:
-            if image_sequence.shape[1] == 2:
-                data_array = image_sequence
-            elif image_sequence.shape[-1] == 2:
-                data_array = np.transpose(image_sequence, (0, 3, 1, 2))
-            else:
-                raise ValueError(f"Unexpected 4D shape: {image_sequence.shape}")
-        elif image_sequence.ndim == 3:
-            data_array = image_sequence[:, None, :, :]
-        else:
-            raise ValueError(f"Unexpected number of dimensions: {image_sequence.ndim}")
-    else:
-        raise ValueError("Either sequence or tif_path must be provided")
+    flow_utils = FlowMatchingUtils()
+    if sequence is None:
+        raise ValueError("sequence must be provided")
+    data_array = sequence
+    print(f"Using sequence with shape {data_array.shape}...")
     T, C, H, W = data_array.shape
     print(f"  Sequence shape: {T} frames, {C} channels, {H}x{W}")
-    # Get normalization parameters
-    # Get normalization parameters (Moving MNIST is already in [0, 1])
     if hasattr(test_dataset, "normalization_params"):
         img_min, img_max = test_dataset.normalization_params
     else:
-        # Moving MNIST is already normalized to [0, 1]
         img_min, img_max = 0.0, 1.0
 
     # Normalize function
@@ -669,21 +634,13 @@ def generate_flow_rollout_movie(
         # Convert to uint8
         composite_frame_uint8 = (np.clip(composite_frame, 0, 1) * 255).astype(np.uint8)
         video_frames.append(composite_frame_uint8)
-    # Save video
-    # Save video
-    # Generate output filename based on input source
-    if tif_path is not None:
-        base_name = tif_path.stem
-    elif sequence is not None:
-        base_name = f"moving_mnist_sequence_{start_frame}"
-    else:
-        base_name = "rollout"
+    base_name = f"{dataset_type}_sequence_{start_frame}"
     output_filename = output_path / f"{base_name}_latent_flow_matching_rollout.mp4"
     print(f"Saving video to {output_filename}...")
     imageio.mimwrite(
         str(output_filename), video_frames, fps=fps, codec="libx264", quality=8
     )
-    print(f"Video saved successfully!")
+    print(f"Saved video to {output_filename}")
     return output_filename
 
 
@@ -692,8 +649,7 @@ def generate_diffusion_rollout_movie(
     vae,
     scheduler,
     test_dataset,
-    sequence=None,  # Sequence array [T, C, H, W] for Moving MNIST
-    tif_path=None,  # Path to TIF file (for backward compatibility)
+    sequence=None,
     dataset_type="moving_mnist",
     frame_separation=5,
     start_frame=0,
@@ -702,7 +658,7 @@ def generate_diffusion_rollout_movie(
     fps=10,
     output_dir=str(OUTPUT_DIR / "output_mp4s"),
     num_inference_steps=50,
-    use_ddim=False,  # Use DDIM for faster sampling if True
+    use_ddim=False,
 ):
     """
     Generate rollout movie showing iterative predictions using Diffusion.
@@ -711,9 +667,8 @@ def generate_diffusion_rollout_movie(
         vae: Trained VAE
         scheduler: Diffusion scheduler
         test_dataset: Test dataset (for normalization parameters)
-        sequence: Sequence array [T, C, H, W] for Moving MNIST (if None, uses tif_path)
-        tif_path: Path to TIF file for rollout (if None, uses sequence)
-        dataset_type: 'moving_mnist' or 'pulsation' (for normalization)
+        sequence: Sequence array [T, C, H, W].
+        dataset_type: Dataset label used in output naming.
         frame_separation: Frame separation m used during training
         start_frame: Starting frame index (default: 0)
         num_predictions: Number of prediction steps to generate
@@ -721,43 +676,21 @@ def generate_diffusion_rollout_movie(
         fps: Frames per second for output video
         output_dir: Directory to save output videos
         num_inference_steps: Number of denoising steps
-        use_ddim: Use DDIM for deterministic sampling (faster)
+        use_ddim: Use deterministic diffusion sampling when supported.
     Returns:
         Path to saved video file
     """
     diffusion_model.eval()
     vae.eval()
-    # Load sequence (from array or TIF file)
-    if sequence is not None:
-        # Use provided sequence array
-        data_array = sequence  # Already in [T, C, H, W] format
-        print(f"Using provided sequence with shape {data_array.shape}...")
-    elif tif_path is not None:
-        # Load from TIF file
-        print(f"Loading {tif_path.name}...")
-        image_sequence = tifffile.imread(str(tif_path))
-        # Handle different TIF formats
-        if image_sequence.ndim == 4:
-            if image_sequence.shape[1] == 2:
-                data_array = image_sequence
-            elif image_sequence.shape[-1] == 2:
-                data_array = np.transpose(image_sequence, (0, 3, 1, 2))
-            else:
-                raise ValueError(f"Unexpected 4D shape: {image_sequence.shape}")
-        elif image_sequence.ndim == 3:
-            data_array = image_sequence[:, None, :, :]
-        else:
-            raise ValueError(f"Unexpected number of dimensions: {image_sequence.ndim}")
-    else:
-        raise ValueError("Either sequence or tif_path must be provided")
+    if sequence is None:
+        raise ValueError("sequence must be provided")
+    data_array = sequence
+    print(f"Using sequence with shape {data_array.shape}...")
     T, C, H, W = data_array.shape
     print(f"  Sequence shape: {T} frames, {C} channels, {H}x{W}")
-    # Get normalization parameters
-    # Get normalization parameters (Moving MNIST is already in [0, 1])
     if hasattr(test_dataset, "normalization_params"):
         img_min, img_max = test_dataset.normalization_params
     else:
-        # Moving MNIST is already normalized to [0, 1]
         img_min, img_max = 0.0, 1.0
 
     # Normalize function
@@ -867,21 +800,13 @@ def generate_diffusion_rollout_movie(
         # Convert to uint8
         composite_frame_uint8 = (np.clip(composite_frame, 0, 1) * 255).astype(np.uint8)
         video_frames.append(composite_frame_uint8)
-    # Save video
-    # Save video
-    # Generate output filename based on input source
-    if tif_path is not None:
-        base_name = tif_path.stem
-    elif sequence is not None:
-        base_name = f"moving_mnist_sequence_{start_frame}"
-    else:
-        base_name = "rollout"
+    base_name = f"{dataset_type}_sequence_{start_frame}"
     output_filename = output_path / f"{base_name}_latent_diffusion_rollout.mp4"
     print(f"Saving video to {output_filename}...")
     imageio.mimwrite(
         str(output_filename), video_frames, fps=fps, codec="libx264", quality=8
     )
-    print(f"Video saved successfully!")
+    print(f"Saved video to {output_filename}")
     return output_filename
 
 

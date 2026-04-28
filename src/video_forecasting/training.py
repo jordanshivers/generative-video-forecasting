@@ -62,11 +62,7 @@ class FrameOnlyDataset(Dataset):
 
 
 def train_vae_epoch(model, dataloader, optimizer, device, beta=1.0):
-    """
-    Train VAE for one epoch with FIXED KL loss computation.
-    Key fix: KL loss normalized by batch size only (not by latent size).
-    This ensures proper regularization strength.
-    """
+    """Train a VAE for one epoch."""
     model.train()
     total_recon_loss = 0.0
     total_kl_loss = 0.0
@@ -82,11 +78,9 @@ def train_vae_epoch(model, dataloader, optimizer, device, beta=1.0):
         x_recon, mu, logvar = model(x, target_size=x.shape)
         # Reconstruction loss (MSE)
         recon_loss = F.mse_loss(x_recon, x, reduction="sum") / x.size(0)
-        # KL divergence loss - FIXED COMPUTATION
-        # Sum over all dimensions [1,2,3], normalize by batch size only
-        # This matches Beta-VAE and provides proper regularization
+        # Sum over latent dimensions and normalize by batch size.
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        kl_loss = kl_loss / x.size(0)  # Normalize by batch size ONLY
+        kl_loss = kl_loss / x.size(0)
         # Total loss
         loss = recon_loss + beta * kl_loss
         # Backward pass
@@ -103,7 +97,7 @@ def train_vae_epoch(model, dataloader, optimizer, device, beta=1.0):
 
 
 def evaluate_vae(model, dataloader, device, beta=1.0):
-    """Evaluate VAE with fixed KL loss computation."""
+    """Evaluate a VAE."""
     model.eval()
     total_recon_loss = 0.0
     total_kl_loss = 0.0
@@ -117,7 +111,6 @@ def evaluate_vae(model, dataloader, device, beta=1.0):
             x_recon, mu, logvar = model(x, target_size=x.shape)
             # Reconstruction loss
             recon_loss = F.mse_loss(x_recon, x, reduction="sum") / x.size(0)
-            # KL loss - FIXED: normalize by batch size only
             kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
             kl_loss = kl_loss / x.size(0)
             loss = recon_loss + beta * kl_loss
@@ -130,7 +123,7 @@ def evaluate_vae(model, dataloader, device, beta=1.0):
     return avg_recon_loss, avg_kl_loss, avg_loss
 
 
-# TRAINING HYPERPARAMETERS
+# Default VAE training parameters used by the notebooks.
 vae_beta = 1.0
 vae_learning_rate = 3e-4
 vae_num_epochs = 100
@@ -297,7 +290,7 @@ def evaluate_diffusion(model, vae, dataloader, scheduler, device):
 
 
 def train_mdn_rnn_epoch(model, vae, dataloader, optimizer, device, latent_shape):
-    """Train MDN-RNN for one epoch using sequential processing (World Models style)."""
+    """Train an MDN-RNN for one epoch."""
     model.train()
     vae.eval()  # Freeze VAE
     total_loss = 0.0
@@ -310,18 +303,16 @@ def train_mdn_rnn_epoch(model, vae, dataloader, optimizer, device, latent_shape)
         # Encode entire sequence to latent space (sample with reduced variance for easier learning)
         with torch.no_grad():
             sequences_flat = sequences.view(B * T, C, H, W)
-            # Use reduced variance sampling (0.1 = 10% of original variance) - easier to learn than full variance
             latents = vae.encode_and_sample(
                 sequences_flat, variance_scale=0.1
-            )  # Reduced variance sampling
+            )
             latents = latents.view(
                 B, T, *latents.shape[1:]
             )  # [B, T, C_latent, H_latent, W_latent]
             latents_flat = latents.view(B, T, -1)  # [B, T, latent_dim]
 
-        # Process entire sequence at once (World Models style - matches original paper)
+        # Process each sequence with teacher forcing.
         # Input: frames 0 to T-2, Target: frames 1 to T-1 (teacher forcing)
-        # The RNN processes the entire sequence and PyTorch handles BPTT automatically
         input_latents = latents_flat[
             :, :-1, :
         ]  # [B, T-1, latent_dim] - frames 0 to T-2

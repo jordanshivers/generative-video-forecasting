@@ -19,10 +19,6 @@ __pycache__/
 *.py[cod]
 .ruff_cache/
 
-# Local validation harness
-tests/
-run_smoke_tests.py
-
 # System files
 .DS_Store
 **/.DS_Store

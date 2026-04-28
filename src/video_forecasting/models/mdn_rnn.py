@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 
 class SequenceDataset(Dataset):
     """
-    Dataset that provides full sequences for MDN-RNN training (World Models style).
+    Dataset that provides full sequences for MDN-RNN training.
     Returns full sequences for sequential processing with RNN hidden state.
     """
 
@@ -89,7 +89,7 @@ class MDNRNN(nn.Module):
 
     def forward(self, latent_sequence, hidden=None):
         """
-        Forward pass through MDN-RNN (World Models style).
+        Forward pass through MDN-RNN.
 
         Args:
             latent_sequence: Sequence of latent vectors [B, T, latent_dim] where T can be any length
@@ -101,7 +101,7 @@ class MDNRNN(nn.Module):
             sigma: Standard deviations [B, n_mixtures, latent_dim]
             hidden: Updated hidden state
         """
-        # RNN forward pass - processes entire sequence at once (World Models style)
+        # RNN forward pass - processes entire sequence at once
         rnn_out, hidden = self.rnn(
             latent_sequence, hidden
         )  # rnn_out: [B, T, hidden_dim]
@@ -121,7 +121,7 @@ class MDNRNN(nn.Module):
             B, T, self.n_mixtures, self.latent_dim
         )  # [B, T, n_mixtures, latent_dim]
 
-        # Standard deviations (use exp(log_sigma) parameterization like World Models)
+        # Standard deviations use an exp(log_sigma) parameterization.
         sigma_logits = self.sigma_layer(rnn_out_flat)  # [B*T, n_mixtures * latent_dim]
         sigma = torch.exp(sigma_logits)  # [B*T, n_mixtures * latent_dim]
         sigma = torch.clamp(
@@ -224,7 +224,7 @@ def sample_from_mdn(pi, mu, sigma, deterministic=False):
 @torch.no_grad()
 def predict_next_frame(mdn_rnn, vae, current_frame, latent_shape, hidden=None):
     """
-    Predict next frame given current frame (World Models style).
+    Predict next frame given current frame.
     Uses RNN hidden state to maintain history.
 
     Args:
@@ -332,7 +332,7 @@ def sample_from_mdn(pi, mu, sigma, deterministic=False):
 @torch.no_grad()
 def predict_next_frame_vector(mdn_rnn, vae, current_frame, latent_dim, hidden=None):
     """
-    Predict next frame given current frame (World Models style).
+    Predict next frame given current frame.
     Uses RNN hidden state to maintain history.
 
     Args:
@@ -399,7 +399,7 @@ def generate_rollout(
     mdn_rnn, vae, initial_frames, num_predictions, latent_shape, device="cpu"
 ):
     """
-    Generate rollout by iteratively predicting future frames (World Models style).
+    Generate rollout by iteratively predicting future frames.
     Uses RNN hidden state to maintain history.
 
     Args:
@@ -469,7 +469,7 @@ def generate_rollout_vector(
     mdn_rnn, vae, initial_frames, num_predictions, latent_dim, device="cpu"
 ):
     """
-    Generate rollout by iteratively predicting future frames (World Models style).
+    Generate rollout by iteratively predicting future frames.
     Uses RNN hidden state to maintain history.
 
     Args:

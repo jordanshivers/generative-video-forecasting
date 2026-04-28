@@ -95,7 +95,7 @@ class MovingMNISTDataset(Dataset):
 
     @property
     def normalization_params(self) -> Tuple[Optional[float], Optional[float]]:
-        """Return normalization parameters for compatibility with older notebooks."""
+        """Return the value range used by normalized frames."""
         return self.img_min, self.img_max
 
     def _load_sequences(self, download: bool) -> list[np.ndarray]:

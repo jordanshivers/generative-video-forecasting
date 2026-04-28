@@ -319,7 +319,7 @@ class VectorVAEResidualBlock(nn.Module):
 class VectorVAEEncoder(nn.Module):
     """
     VectorVAE Encoder - maps images to latent distribution parameters.
-    Uses 1D latent bottleneck (World Models style) - outputs flattened vectors.
+    Uses 1D latent bottleneck - outputs flattened vectors.
     Now with residual connections for better gradient flow.
     """
 
@@ -372,7 +372,7 @@ class VectorVAEEncoder(nn.Module):
 class VectorVAEDecoder(nn.Module):
     """
     VectorVAE Decoder with residual connections for better gradient flow and reconstruction quality.
-    Adapted for 1D latent input (World Models style).
+    Adapted for 1D latent input.
     """
 
     def __init__(
@@ -511,7 +511,7 @@ class VectorVAEDecoder(nn.Module):
 class VectorVAE(nn.Module):
     """
     Variational Autoencoder - combines encoder and decoder.
-    Uses 1D latent bottleneck (World Models style).
+    Uses 1D latent bottleneck.
     """
 
     def __init__(
@@ -842,10 +842,10 @@ class SequenceSpatialVAE(nn.Module):
 
     def encode_and_sample(self, x, variance_scale=1.0):
         """
-        Encode and sample from latent distribution (World Models style).
+        Encode and sample from latent distribution.
         Samples z ~ N(μ, (variance_scale * σ)²) for each training batch to handle stochasticity.
-        This matches the original World Models paper - sampling during MDN-RNN training
-        helps avoid overfitting and teaches the model to handle SequenceSpatialVAE stochasticity.
+        Sampling during MDN-RNN training helps avoid overfitting and makes the sequence
+        model robust to VAE stochasticity.
 
         Args:
             x: Input images [B, C, H, W]
@@ -926,7 +926,7 @@ class SequenceVectorVAEResidualBlock(nn.Module):
 class SequenceVectorVAEEncoder(nn.Module):
     """
     SequenceVectorVAE Encoder - maps images to latent distribution parameters.
-    Uses 1D latent bottleneck (World Models style) - outputs flattened vectors.
+    Uses 1D latent bottleneck - outputs flattened vectors.
     Now with residual connections for better gradient flow.
     """
 
@@ -979,7 +979,7 @@ class SequenceVectorVAEEncoder(nn.Module):
 class SequenceVectorVAEDecoder(nn.Module):
     """
     SequenceVectorVAE Decoder with residual connections for better gradient flow and reconstruction quality.
-    Adapted for 1D latent input (World Models style).
+    Adapted for 1D latent input.
     """
 
     def __init__(
@@ -1106,7 +1106,7 @@ class SequenceVectorVAEDecoder(nn.Module):
 class SequenceVectorVAE(nn.Module):
     """
     Variational Autoencoder - combines encoder and decoder.
-    Uses 1D latent bottleneck (World Models style).
+    Uses 1D latent bottleneck.
     """
 
     def __init__(
@@ -1162,10 +1162,10 @@ class SequenceVectorVAE(nn.Module):
 
     def encode_and_sample(self, x, variance_scale=1.0):
         """
-        Encode and sample from latent distribution (World Models style).
+        Encode and sample from latent distribution.
         Samples z ~ N(μ, (variance_scale * σ)²) for each training batch to handle stochasticity.
-        This matches the original World Models paper - sampling during MDN-RNN training
-        helps avoid overfitting and teaches the model to handle SequenceVectorVAE stochasticity.
+        Sampling during MDN-RNN training helps avoid overfitting and makes the sequence
+        model robust to VAE stochasticity.
 
         Args:
             x: Input images [B, C, H, W]
