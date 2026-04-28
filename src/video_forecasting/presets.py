@@ -78,11 +78,11 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
         "context_frames": 10,
         "pred_frames": 10,
         "hid_s": 32,
-        "hid_t": 256,
+        "hid_t": 128,
         "num_spatial_layers": 4,
         "num_temporal_layers": 4,
         "num_epochs": 100,
-        "batch_size": {"cuda": 32, "mps": 16, "cpu": 8},
+        "batch_size": {"cuda": 128, "mps": 16, "cpu": 8},
     },
     "latent_transformer": {
         "context_size": 10,
