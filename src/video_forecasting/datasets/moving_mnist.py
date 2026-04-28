@@ -28,7 +28,7 @@ class MovingMNISTDataset(Dataset):
         normalize: If True, return frames in ``[0, 1]``.
         frame_separation: Gap between input and target frames.
         download: If True, download the dataset if needed.
-        max_sequences: Optional cap before train/test splitting for quick runs.
+        max_sequences: Optional cap before train/test splitting.
     """
 
     def __init__(

@@ -1,1 +1,1 @@
-"""Model components for latent video forecasting."""
+"""Model components for generative video forecasting."""

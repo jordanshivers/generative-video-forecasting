@@ -9,8 +9,12 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .models.diffusion import sample_latent_diffusion
-from .models.flow_matching import FlowMatchingUtils, sample_latent_flow_matching
+from .models.diffusion import sample_latent_diffusion, sample_pixel_diffusion
+from .models.flow_matching import (
+    FlowMatchingUtils,
+    sample_latent_flow_matching,
+    sample_pixel_flow_matching,
+)
 from .models.mdn_rnn import predict_next_frame, predict_next_frame_vector
 from .models.transformer import generate_transformer_rollout
 
@@ -23,6 +27,45 @@ def set_output_dir(path):
     OUTPUT_DIR = Path(path)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     return OUTPUT_DIR
+
+
+def display_video(path, width=640):
+    """Display an MP4 inline in notebooks when IPython is available."""
+    try:
+        from IPython.display import Video, display
+
+        return display(Video(str(path), embed=True, width=width))
+    except Exception:
+        return path
+
+
+def _to_rgb(frame):
+    frame = np.asarray(frame, dtype=np.float32)
+    if frame.shape[0] == 1:
+        return np.stack([frame[0]] * 3, axis=2)
+    rgb = np.transpose(frame[:3], (1, 2, 0))
+    if rgb.shape[2] < 3:
+        rgb = np.pad(rgb, ((0, 0), (0, 0), (0, 3 - rgb.shape[2])))
+    return rgb
+
+
+def _comparison_frame(pred_frame, gt_frame):
+    pred_rgb = _to_rgb(np.clip(pred_frame, 0, 1))
+    if gt_frame is None:
+        gt_rgb = np.zeros_like(pred_rgb)
+        error_rgb = np.zeros_like(pred_rgb)
+    else:
+        gt_rgb = _to_rgb(np.clip(gt_frame, 0, 1))
+        error = np.abs(np.clip(pred_frame, 0, 1) - np.clip(gt_frame, 0, 1)).sum(axis=0)
+        error = (error - error.min()) / (error.max() - error.min() + 1e-8)
+        error_rgb = np.zeros_like(pred_rgb)
+        error_rgb[:, :, 0] = error
+    height, width, _ = pred_rgb.shape
+    composite = np.zeros((height, width * 3, 3), dtype=np.float32)
+    composite[:, :width] = pred_rgb
+    composite[:, width : 2 * width] = gt_rgb
+    composite[:, 2 * width : 3 * width] = error_rgb
+    return (np.clip(composite, 0, 1) * 255).astype(np.uint8)
 
 
 def save_reconstruction_frame(
@@ -970,6 +1013,312 @@ def generate_transformer_rollout_movie(
         video_frames.append((np.clip(composite, 0, 1) * 255).astype(np.uint8))
 
     output_file = output_path / f"moving_mnist_sequence_{start_frame}_latent_transformer_rollout.mp4"
+    imageio.mimwrite(str(output_file), video_frames, fps=fps, codec="libx264", quality=8)
+    return output_file
+
+
+def visualize_pixel_flow_predictions(
+    flow_matching_model,
+    dataset,
+    flow_utils,
+    num_samples=4,
+    device="cpu",
+    title_prefix="",
+    num_inference_steps=25,
+):
+    """Visualize pixel-space flow matching predictions against ground truth."""
+    flow_matching_model.eval()
+    indices = torch.randperm(len(dataset))[:num_samples]
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5 * num_samples))
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    with torch.no_grad():
+        for row, idx in enumerate(indices):
+            sample = dataset[idx]
+            image1 = sample["image1"].unsqueeze(0).to(device)
+            image2 = sample["image2"].unsqueeze(0).to(device)
+            predicted = sample_pixel_flow_matching(
+                flow_matching_model,
+                image1,
+                flow_utils,
+                num_inference_steps=num_inference_steps,
+                device=device,
+            )
+            img1_np = image1.squeeze(0).cpu().numpy()
+            img2_np = image2.squeeze(0).cpu().numpy()
+            pred_np = predicted.squeeze(0).cpu().numpy()
+            for col, frame, title in [
+                (0, img1_np, "Input Frame"),
+                (1, pred_np, "Predicted Frame"),
+                (2, img2_np, "Ground Truth"),
+            ]:
+                axes[row, col].imshow(np.clip(_to_rgb(frame), 0, 1))
+                axes[row, col].set_title(f"{title_prefix}{title}", fontsize=12)
+                axes[row, col].axis("off")
+            mse = np.mean((pred_np - img2_np) ** 2)
+            axes[row, 1].text(
+                0.02,
+                0.98,
+                f"MSE: {mse:.4f}",
+                transform=axes[row, 1].transAxes,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+            )
+    plt.tight_layout()
+    output_path = (
+        OUTPUT_DIR
+        / f"{title_prefix.lower().replace(' ', '_')}_pixel_flow_matching_predictions.png"
+    )
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return output_path
+
+
+def visualize_pixel_diffusion_predictions(
+    diffusion_model,
+    dataset,
+    scheduler,
+    num_samples=4,
+    device="cpu",
+    title_prefix="",
+    num_inference_steps=50,
+):
+    """Visualize pixel-space diffusion predictions against ground truth."""
+    diffusion_model.eval()
+    indices = torch.randperm(len(dataset))[:num_samples]
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5 * num_samples))
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    with torch.no_grad():
+        for row, idx in enumerate(indices):
+            sample = dataset[idx]
+            image1 = sample["image1"].unsqueeze(0).to(device)
+            image2 = sample["image2"].unsqueeze(0).to(device)
+            predicted = sample_pixel_diffusion(
+                diffusion_model,
+                image1,
+                scheduler,
+                num_inference_steps=num_inference_steps,
+                device=device,
+            )
+            img1_np = image1.squeeze(0).cpu().numpy()
+            img2_np = image2.squeeze(0).cpu().numpy()
+            pred_np = predicted.squeeze(0).cpu().numpy()
+            for col, frame, title in [
+                (0, img1_np, "Input Frame"),
+                (1, pred_np, "Predicted Frame"),
+                (2, img2_np, "Ground Truth"),
+            ]:
+                axes[row, col].imshow(np.clip(_to_rgb(frame), 0, 1))
+                axes[row, col].set_title(f"{title_prefix}{title}", fontsize=12)
+                axes[row, col].axis("off")
+            mse = np.mean((pred_np - img2_np) ** 2)
+            axes[row, 1].text(
+                0.02,
+                0.98,
+                f"MSE: {mse:.4f}",
+                transform=axes[row, 1].transAxes,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+            )
+    plt.tight_layout()
+    output_path = (
+        OUTPUT_DIR
+        / f"{title_prefix.lower().replace(' ', '_')}_pixel_diffusion_predictions.png"
+    )
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return output_path
+
+
+def generate_pixel_flow_rollout_movie(
+    flow_matching_model,
+    dataset,
+    flow_utils,
+    sequence,
+    dataset_type="moving_mnist",
+    frame_separation=5,
+    start_frame=0,
+    num_predictions=20,
+    device="cpu",
+    fps=10,
+    output_dir=str(OUTPUT_DIR / "output_mp4s"),
+    num_inference_steps=25,
+):
+    """Generate an autoregressive pixel-space flow matching rollout MP4."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    data_array = np.asarray(sequence, dtype=np.float32)
+    current_frame = np.clip(data_array[start_frame].copy(), 0, 1)
+    predicted_frames = [current_frame.copy()]
+    ground_truth_frames = [current_frame.copy()]
+    with torch.no_grad():
+        for step in tqdm(range(num_predictions), desc="Generating predictions"):
+            current_tensor = (
+                torch.from_numpy(current_frame).float().unsqueeze(0).to(device)
+            )
+            predicted = sample_pixel_flow_matching(
+                flow_matching_model,
+                current_tensor,
+                flow_utils,
+                num_inference_steps=num_inference_steps,
+                device=device,
+            )
+            current_frame = predicted.squeeze(0).cpu().numpy()
+            predicted_frames.append(current_frame.copy())
+            gt_idx = start_frame + (step + 1) * frame_separation
+            ground_truth_frames.append(
+                data_array[gt_idx].copy() if gt_idx < len(data_array) else None
+            )
+    video_frames = [
+        _comparison_frame(pred, gt)
+        for pred, gt in zip(predicted_frames, ground_truth_frames)
+    ]
+    output_file = (
+        output_path / f"{dataset_type}_sequence_{start_frame}_pixel_flow_matching_rollout.mp4"
+    )
+    imageio.mimwrite(str(output_file), video_frames, fps=fps, codec="libx264", quality=8)
+    return output_file
+
+
+def generate_pixel_diffusion_rollout_movie(
+    diffusion_model,
+    dataset,
+    scheduler,
+    sequence,
+    dataset_type="moving_mnist",
+    frame_separation=5,
+    start_frame=0,
+    num_predictions=20,
+    device="cpu",
+    fps=10,
+    output_dir=str(OUTPUT_DIR / "output_mp4s"),
+    num_inference_steps=50,
+):
+    """Generate an autoregressive pixel-space diffusion rollout MP4."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    data_array = np.asarray(sequence, dtype=np.float32)
+    current_frame = np.clip(data_array[start_frame].copy(), 0, 1)
+    predicted_frames = [current_frame.copy()]
+    ground_truth_frames = [current_frame.copy()]
+    with torch.no_grad():
+        for step in tqdm(range(num_predictions), desc="Generating predictions"):
+            current_tensor = (
+                torch.from_numpy(current_frame).float().unsqueeze(0).to(device)
+            )
+            predicted = sample_pixel_diffusion(
+                diffusion_model,
+                current_tensor,
+                scheduler,
+                num_inference_steps=num_inference_steps,
+                device=device,
+            )
+            current_frame = predicted.squeeze(0).cpu().numpy()
+            predicted_frames.append(current_frame.copy())
+            gt_idx = start_frame + (step + 1) * frame_separation
+            ground_truth_frames.append(
+                data_array[gt_idx].copy() if gt_idx < len(data_array) else None
+            )
+    video_frames = [
+        _comparison_frame(pred, gt)
+        for pred, gt in zip(predicted_frames, ground_truth_frames)
+    ]
+    output_file = (
+        output_path / f"{dataset_type}_sequence_{start_frame}_pixel_diffusion_rollout.mp4"
+    )
+    imageio.mimwrite(str(output_file), video_frames, fps=fps, codec="libx264", quality=8)
+    return output_file
+
+
+def visualize_simvp_predictions(
+    model,
+    dataset,
+    num_samples=4,
+    device="cpu",
+    title_prefix="",
+):
+    """Visualize the final predicted SimVP frame for random sequence windows."""
+    model.eval()
+    indices = torch.randperm(len(dataset))[:num_samples]
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5 * num_samples))
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    with torch.no_grad():
+        for row, idx in enumerate(indices):
+            sample = dataset[idx]
+            inputs = sample["input"].unsqueeze(0).to(device)
+            targets = sample["target"].unsqueeze(0).to(device)
+            predictions = model(inputs)
+            input_np = inputs[0, -1].cpu().numpy()
+            target_np = targets[0, -1].cpu().numpy()
+            pred_np = predictions[0, -1].cpu().numpy()
+            for col, frame, title in [
+                (0, input_np, "Last Input"),
+                (1, pred_np, "Predicted"),
+                (2, target_np, "Ground Truth"),
+            ]:
+                axes[row, col].imshow(np.clip(_to_rgb(frame), 0, 1))
+                axes[row, col].set_title(f"{title_prefix}{title}", fontsize=12)
+                axes[row, col].axis("off")
+            mse = np.mean((pred_np - target_np) ** 2)
+            axes[row, 1].text(
+                0.02,
+                0.98,
+                f"MSE: {mse:.4f}",
+                transform=axes[row, 1].transAxes,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+            )
+    plt.tight_layout()
+    output_path = OUTPUT_DIR / f"{title_prefix.lower().replace(' ', '_')}_simvp_predictions.png"
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return output_path
+
+
+def generate_simvp_rollout_movie(
+    model,
+    sequence,
+    context_frames=5,
+    num_predictions=20,
+    start_frame=0,
+    dataset_type="moving_mnist",
+    device="cpu",
+    fps=10,
+    output_dir=str(OUTPUT_DIR / "output_mp4s"),
+):
+    """Generate an autoregressive SimVP rollout MP4."""
+    model.eval()
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    data_array = np.asarray(sequence, dtype=np.float32)
+    context = np.clip(
+        data_array[start_frame : start_frame + context_frames].copy(), 0, 1
+    )
+    if len(context) != context_frames:
+        raise ValueError("Not enough frames for the requested context window.")
+
+    predicted_frames = []
+    with torch.no_grad():
+        while len(predicted_frames) < num_predictions:
+            context_tensor = torch.from_numpy(context).float().unsqueeze(0).to(device)
+            pred_block = model(context_tensor).squeeze(0).cpu().numpy()
+            for frame in pred_block:
+                predicted_frames.append(np.clip(frame, 0, 1))
+                if len(predicted_frames) == num_predictions:
+                    break
+            context = np.concatenate([context, np.asarray(pred_block)], axis=0)[
+                -context_frames:
+            ]
+
+    video_frames = []
+    for idx, pred_frame in enumerate(predicted_frames):
+        gt_idx = start_frame + context_frames + idx
+        gt_frame = data_array[gt_idx] if gt_idx < len(data_array) else None
+        video_frames.append(_comparison_frame(pred_frame, gt_frame))
+
+    output_file = output_path / f"{dataset_type}_sequence_{start_frame}_simvp_rollout.mp4"
     imageio.mimwrite(str(output_file), video_frames, fps=fps, codec="libx264", quality=8)
     return output_file
 

@@ -1,10 +1,12 @@
+# Generative Video Forecasting
+
 This repository implements several approaches for learned forecasting of small video datasets. The shared Python package under `src/video_forecasting/` contains dataset loaders/generators, VAE variants, forecasting models, training loops, runtime helpers, and visualization code.
 
 
 The current datasets are:
 
 - **Moving MNIST**, introduced in [this paper](https://doi.org/10.48550/arXiv.1502.04681).
-- **Elastic disk dynamics**, a generated dataset of grayscale movies showing circular particles moving in a 2D box with reflecting or periodic boundaries. The simulation uses simple equal-mass elastic collisions and wall/periodic boundary handling.
+- **Elastic disk dynamics**, a generated dataset of grayscale movies showing circular particles moving in a 2D box with reflecting or periodic boundaries. The simulation uses simple equal-mass elastic collisions and wall/periodic boundary handling. `ElasticDisksDataset` supports configurable `image_size`; Moving MNIST uses its native `64x64` resolution.
 
 | Moving MNIST | Elastic disk dynamics |
 |:------------:|:---------------------:|
@@ -16,6 +18,9 @@ The current datasets are:
 notebooks/
   moving_mnist/
     visualize_moving_mnist_data.ipynb
+    train_moving_mnist_pixel_flow_matching.ipynb
+    train_moving_mnist_pixel_diffusion.ipynb
+    train_moving_mnist_simvp.ipynb
     train_moving_mnist_latent_flow_matching.ipynb
     train_moving_mnist_latent_flow_matching_1dlatent.ipynb
     train_moving_mnist_latent_diffusion_1dlatent.ipynb
@@ -24,6 +29,9 @@ notebooks/
     train_moving_mnist_mdn_rnn_1dvaelatent.ipynb
   elastic_disks/
     visualize_elastic_disks_data.ipynb
+    train_elastic_disks_pixel_flow_matching.ipynb
+    train_elastic_disks_pixel_diffusion.ipynb
+    train_elastic_disks_simvp.ipynb
     train_elastic_disks_latent_flow_matching.ipynb
     train_elastic_disks_latent_flow_matching_1dlatent.ipynb
     train_elastic_disks_latent_diffusion_1dlatent.ipynb
@@ -32,7 +40,9 @@ notebooks/
     train_elastic_disks_mdn_rnn_1dvaelatent.ipynb
 ```
 
-The forecasting notebooks cover spatial latent flow matching, 1D latent flow matching, 1D latent diffusion, causal latent transformers, MDN-RNNs over spatial latents, and MDN-RNNs over 1D VAE latents.
+The forecasting notebooks cover pixel-space flow matching, pixel-space diffusion, SimVP, spatial latent flow matching, 1D latent flow matching, 1D latent diffusion, causal latent transformers, MDN-RNNs over spatial latents, and MDN-RNNs over 1D VAE latents. 
+
+Each training notebook defines `RETRAIN = False` in the setup cell. Leave it as `False` to reuse existing checkpoints from that notebook's output directory, or set it to `True` to ignore existing checkpoints and train fresh models.
 
 
 ## Package Layout
@@ -48,6 +58,7 @@ src/video_forecasting/
     diffusion.py
     transformer.py
     mdn_rnn.py
+    simvp.py
   runtime.py
   training.py
   visualization.py

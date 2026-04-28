@@ -23,7 +23,7 @@ def get_repo_root(start: str | Path | None = None) -> Path:
     if current.name == "notebooks" and (current.parent / "requirements.txt").exists():
         return current.parent
     raise FileNotFoundError(
-        f"Could not find latent-video-forecasting repo root from {current}. "
+        f"Could not find generative-video-forecasting repo root from {current}. "
         "Run notebooks from the repo root or notebooks/ directory."
     )
 

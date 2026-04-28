@@ -214,6 +214,41 @@ def evaluate_flow_matching(model, vae, dataloader, flow_utils, device):
     return avg_loss
 
 
+def train_pixel_flow_matching_epoch(model, dataloader, flow_utils, optimizer, device):
+    """Train a pixel-space flow matching model for one epoch."""
+    model.train()
+    total_loss = 0.0
+    for batch in tqdm(dataloader, desc="Training Pixel Flow Matching"):
+        image1 = batch["image1"].to(device)
+        image2 = batch["image2"].to(device)
+        if image1.shape[2:] != image2.shape[2:]:
+            image1 = F.interpolate(
+                image1, size=image2.shape[2:], mode="bilinear", align_corners=False
+            )
+        loss = flow_utils.compute_loss(model, image2, image1)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    return total_loss / len(dataloader)
+
+
+def evaluate_pixel_flow_matching(model, dataloader, flow_utils, device):
+    """Evaluate a pixel-space flow matching model."""
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating Pixel Flow Matching"):
+            image1 = batch["image1"].to(device)
+            image2 = batch["image2"].to(device)
+            if image1.shape[2:] != image2.shape[2:]:
+                image1 = F.interpolate(
+                    image1, size=image2.shape[2:], mode="bilinear", align_corners=False
+                )
+            total_loss += flow_utils.compute_loss(model, image2, image1).item()
+    return total_loss / len(dataloader)
+
+
 def train_diffusion_epoch(model, vae, dataloader, scheduler, optimizer, device):
     """Train diffusion model for one epoch."""
     model.train()
@@ -260,6 +295,30 @@ def train_diffusion_epoch(model, vae, dataloader, scheduler, optimizer, device):
     return avg_loss
 
 
+def train_pixel_diffusion_epoch(model, dataloader, scheduler, optimizer, device):
+    """Train a pixel-space diffusion model for one epoch."""
+    model.train()
+    total_loss = 0.0
+    for batch in tqdm(dataloader, desc="Training Pixel Diffusion"):
+        image1 = batch["image1"].to(device)
+        image2 = batch["image2"].to(device)
+        if image1.shape[2:] != image2.shape[2:]:
+            image1 = F.interpolate(
+                image1, size=image2.shape[2:], mode="bilinear", align_corners=False
+            )
+        t = scheduler.sample_timesteps(image2.shape[0], device)
+        noise = torch.randn_like(image2)
+        noisy_image = scheduler.add_noise(image2, t, noise)
+        t_scaled = t.float() * (1000.0 / scheduler.num_timesteps)
+        noise_pred = model(noisy_image, image1, t_scaled)
+        loss = F.mse_loss(noise_pred, noise)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    return total_loss / len(dataloader)
+
+
 def evaluate_diffusion(model, vae, dataloader, scheduler, device):
     """Evaluate diffusion model."""
     model.eval()
@@ -300,6 +359,27 @@ def evaluate_diffusion(model, vae, dataloader, scheduler, device):
             total_loss += loss.item()
     avg_loss = total_loss / len(dataloader)
     return avg_loss
+
+
+def evaluate_pixel_diffusion(model, dataloader, scheduler, device):
+    """Evaluate a pixel-space diffusion model."""
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating Pixel Diffusion"):
+            image1 = batch["image1"].to(device)
+            image2 = batch["image2"].to(device)
+            if image1.shape[2:] != image2.shape[2:]:
+                image1 = F.interpolate(
+                    image1, size=image2.shape[2:], mode="bilinear", align_corners=False
+                )
+            t = scheduler.sample_timesteps(image2.shape[0], device)
+            noise = torch.randn_like(image2)
+            noisy_image = scheduler.add_noise(image2, t, noise)
+            t_scaled = t.float() * (1000.0 / scheduler.num_timesteps)
+            noise_pred = model(noisy_image, image1, t_scaled)
+            total_loss += F.mse_loss(noise_pred, noise).item()
+    return total_loss / len(dataloader)
 
 
 def train_mdn_rnn_epoch(model, vae, dataloader, optimizer, device, latent_shape):
@@ -440,4 +520,37 @@ def evaluate_transformer(model, vae, dataloader, device):
             total_loss += loss.item()
             total_steps += 1
 
+    return total_loss / max(total_steps, 1)
+
+
+def train_simvp_epoch(model, dataloader, optimizer, device):
+    """Train SimVP for one epoch with frame-wise MSE."""
+    model.train()
+    total_loss = 0.0
+    total_steps = 0
+    for batch in tqdm(dataloader, desc="Training SimVP"):
+        inputs = batch["input"].to(device)
+        targets = batch["target"].to(device)
+        predictions = model(inputs)
+        loss = F.mse_loss(predictions, targets)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+        total_steps += 1
+    return total_loss / max(total_steps, 1)
+
+
+def evaluate_simvp(model, dataloader, device):
+    """Evaluate SimVP frame-wise MSE."""
+    model.eval()
+    total_loss = 0.0
+    total_steps = 0
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating SimVP"):
+            inputs = batch["input"].to(device)
+            targets = batch["target"].to(device)
+            predictions = model(inputs)
+            total_loss += F.mse_loss(predictions, targets).item()
+            total_steps += 1
     return total_loss / max(total_steps, 1)

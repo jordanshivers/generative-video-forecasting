@@ -75,11 +75,12 @@ class DiffusionScheduler:
         # Move scheduler tensors to same device as x_start
         device = x_start.device
         t_cpu = t.cpu() if t.device != torch.device("cpu") else t
+        view_shape = (x_start.shape[0],) + (1,) * (x_start.dim() - 1)
         sqrt_alphas_cumprod_t = (
-            self.sqrt_alphas_cumprod[t_cpu].to(device).reshape(-1, 1)
+            self.sqrt_alphas_cumprod[t_cpu].to(device).reshape(view_shape)
         )
         sqrt_one_minus_alphas_cumprod_t = (
-            self.sqrt_one_minus_alphas_cumprod[t_cpu].to(device).reshape(-1, 1)
+            self.sqrt_one_minus_alphas_cumprod[t_cpu].to(device).reshape(view_shape)
         )
 
         return sqrt_alphas_cumprod_t * x_start + sqrt_one_minus_alphas_cumprod_t * noise
@@ -255,6 +256,65 @@ def sample_latent_diffusion(
     # Clamp to [0, 1]
     predicted_image = torch.clamp(predicted_image, 0.0, 1.0)
     return predicted_image
+
+
+@torch.no_grad()
+def sample_pixel_diffusion(
+    diffusion_model,
+    condition_image,
+    scheduler,
+    num_inference_steps=50,
+    device="cpu",
+):
+    """
+    Sample a future frame directly in pixel space using conditional diffusion.
+
+    Args:
+        diffusion_model: Trained noise prediction model
+        condition_image: Current frame [B, C, H, W] in [0, 1]
+        scheduler: DiffusionScheduler
+        num_inference_steps: Number of denoising steps
+        device: Device to run on
+    Returns:
+        Predicted future frame [B, C, H, W] in [0, 1]
+    """
+    diffusion_model.eval()
+    condition_image = condition_image.to(device)
+    x = torch.randn_like(condition_image)
+    timesteps = torch.linspace(
+        scheduler.num_timesteps - 1, 0, num_inference_steps, device=device
+    ).long()
+
+    for i, t in enumerate(timesteps):
+        t_scaled = torch.full(
+            (condition_image.shape[0],),
+            float(t.item()) * (1000.0 / scheduler.num_timesteps),
+            device=device,
+        )
+        noise_pred = diffusion_model(x, condition_image, t_scaled)
+
+        alpha_t = scheduler.alphas[t].to(device)
+        alpha_cumprod_t = scheduler.alphas_cumprod[t].to(device)
+        beta_t = scheduler.betas[t].to(device)
+
+        if i < len(timesteps) - 1:
+            alpha_cumprod_t_prev = scheduler.alphas_cumprod[timesteps[i + 1]].to(device)
+            pred_x0 = (x - torch.sqrt(1 - alpha_cumprod_t) * noise_pred) / torch.sqrt(
+                alpha_cumprod_t
+            )
+            pred_dir = torch.sqrt(1 - alpha_cumprod_t_prev) * noise_pred
+            variance = scheduler.posterior_variance[t].to(device)
+            x = (
+                torch.sqrt(alpha_cumprod_t_prev) * pred_x0
+                + pred_dir
+                + torch.sqrt(variance) * torch.randn_like(x)
+            )
+        else:
+            x = (
+                x - beta_t * noise_pred / torch.sqrt(1 - alpha_cumprod_t)
+            ) / torch.sqrt(alpha_t)
+
+    return torch.clamp(x, 0.0, 1.0)
 
 
 def build_diffusion_mlp(**kwargs):

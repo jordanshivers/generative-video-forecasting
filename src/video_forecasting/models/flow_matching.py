@@ -491,6 +491,34 @@ def sample_latent_flow_matching(
     return predicted_image
 
 
+@torch.no_grad()
+def sample_pixel_flow_matching(
+    flow_matching_model,
+    condition_image,
+    flow_utils,
+    num_inference_steps=25,
+    device="cpu",
+):
+    """
+    Sample a future frame directly in pixel space using conditional flow matching.
+
+    Args:
+        flow_matching_model: Trained velocity prediction model
+        condition_image: Current frame [B, C, H, W] in [0, 1]
+        flow_utils: FlowMatchingUtils
+        num_inference_steps: Number of Euler integration steps
+        device: Device to run on
+    Returns:
+        Predicted future frame [B, C, H, W] in [0, 1]
+    """
+    flow_matching_model.eval()
+    condition_image = condition_image.to(device)
+    predicted_image = flow_utils.sample(
+        flow_matching_model, condition_image, steps=num_inference_steps
+    )
+    return torch.clamp(predicted_image, 0.0, 1.0)
+
+
 def build_flow_unet(**kwargs):
     return ConditionalLatentUNet(**kwargs)
 
