@@ -1,11 +1,11 @@
 """Synthetic elastic-disk image dataset.
 
 The dataset generates grayscale movies of equal-mass elastic disks moving in a
-2D box. The rendered images use Gaussian blobs, but the dynamics are simple
-elastic collisions rather than force-integrated particle dynamics. Frames are
-returned as ``float32`` tensors with shape ``(1, H, W)`` and values in
-``[0, 1]``. Generated arrays are cached under ``data/elastic_disks/`` so
-Colab and local runs are deterministic.
+2D box. By default, frames render hard filled circles. A soft Gaussian rendering
+mode is also available. The dynamics are simple elastic collisions rather than
+force-integrated particle dynamics. Frames are returned as ``float32`` tensors
+with shape ``(1, H, W)`` and values in ``[0, 1]``. Generated arrays are cached
+under ``data/elastic_disks/`` so Colab and local runs are deterministic.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ class ElasticDisksDataset(Dataset):
         radius: float = 0.06,
         speed_range: tuple[float, float] = (0.015, 0.035),
         boundary: str = "reflecting",
+        render_mode: str = "hard",
         normalize: bool = True,
         frame_separation: int = 5,
         seed: int = 42,
@@ -49,6 +50,7 @@ class ElasticDisksDataset(Dataset):
         self.radius = radius
         self.speed_range = speed_range
         self.boundary = boundary
+        self.render_mode = render_mode
         self.normalize = normalize
         self.frame_separation = frame_separation
         self.seed = seed
@@ -79,6 +81,7 @@ class ElasticDisksDataset(Dataset):
             f"  Split: {'train' if train else 'test'}\n"
             f"  Total sequences: {len(self.sequences)}\n"
             f"  Boundary: {self.boundary}\n"
+            f"  Render mode: {self.render_mode}\n"
             f"  Particles: {self.num_particles}\n"
             f"  Frame separation: {self.frame_separation}\n"
             f"  Total pairs: {self.total_pairs}\n"
@@ -93,6 +96,8 @@ class ElasticDisksDataset(Dataset):
     def _validate(self) -> None:
         if self.boundary not in {"reflecting", "periodic"}:
             raise ValueError("boundary must be 'reflecting' or 'periodic'")
+        if self.render_mode not in {"hard", "soft"}:
+            raise ValueError("render_mode must be 'hard' or 'soft'")
         if self.num_sequences < 2:
             raise ValueError("num_sequences must be at least 2")
         if self.sequence_length < 2:
@@ -117,6 +122,7 @@ class ElasticDisksDataset(Dataset):
             "radius": self.radius,
             "speed_range": self.speed_range,
             "boundary": self.boundary,
+            "render_mode": self.render_mode,
             "seed": self.seed,
         }
         key = hashlib.sha1(json.dumps(params, sort_keys=True).encode()).hexdigest()[:12]
@@ -216,6 +222,7 @@ class ElasticDisksDataset(Dataset):
         coords = (np.arange(self.image_size, dtype=np.float32) + 0.5) / self.image_size
         yy, xx = np.meshgrid(coords, coords, indexing="ij")
         frame = np.zeros((self.image_size, self.image_size), dtype=np.float32)
+        radius2 = self.radius * self.radius
         sigma = self.radius / 2.0
         for x_pos, y_pos in positions:
             dx = xx - x_pos
@@ -224,7 +231,10 @@ class ElasticDisksDataset(Dataset):
                 dx = dx - np.round(dx)
                 dy = dy - np.round(dy)
             dist2 = dx * dx + dy * dy
-            frame += np.exp(-0.5 * dist2 / (sigma * sigma))
+            if self.render_mode == "hard":
+                frame = np.maximum(frame, (dist2 <= radius2).astype(np.float32))
+            else:
+                frame += np.exp(-0.5 * dist2 / (sigma * sigma))
         return np.clip(frame, 0.0, 1.0)
 
     def _normalize(self, img: np.ndarray) -> np.ndarray:
