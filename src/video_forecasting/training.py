@@ -150,15 +150,20 @@ def train_flow_matching_epoch(model, vae, dataloader, flow_utils, optimizer, dev
         with torch.no_grad():
             condition_z = vae.encode_to_latent(image1)
             target_z = vae.encode_to_latent(image2)
-        # Ensure condition_z and target_z have the same spatial dimensions
-        if condition_z.shape[2:] != target_z.shape[2:]:
-            target_h, target_w = target_z.shape[2], target_z.shape[3]
-            condition_z = F.interpolate(
-                condition_z,
-                size=(target_h, target_w),
-                mode="bilinear",
-                align_corners=False,
-            )
+        if condition_z.dim() == 4 and target_z.dim() == 4:
+            if condition_z.shape[2:] != target_z.shape[2:]:
+                target_h, target_w = target_z.shape[2], target_z.shape[3]
+                condition_z = F.interpolate(
+                    condition_z,
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+        elif condition_z.dim() == 2 and target_z.dim() == 2:
+            if condition_z.shape != target_z.shape:
+                raise ValueError(
+                    f"Vector latent shape mismatch: {condition_z.shape} vs {target_z.shape}"
+                )
         # Compute CFM loss
         loss = flow_utils.compute_loss(model, target_z, condition_z)
         # Backward pass
@@ -189,14 +194,20 @@ def evaluate_flow_matching(model, vae, dataloader, flow_utils, device):
                 )
             condition_z = vae.encode_to_latent(image1)
             target_z = vae.encode_to_latent(image2)
-            if condition_z.shape[2:] != target_z.shape[2:]:
-                target_h, target_w = target_z.shape[2], target_z.shape[3]
-                condition_z = F.interpolate(
-                    condition_z,
-                    size=(target_h, target_w),
-                    mode="bilinear",
-                    align_corners=False,
-                )
+            if condition_z.dim() == 4 and target_z.dim() == 4:
+                if condition_z.shape[2:] != target_z.shape[2:]:
+                    target_h, target_w = target_z.shape[2], target_z.shape[3]
+                    condition_z = F.interpolate(
+                        condition_z,
+                        size=(target_h, target_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+            elif condition_z.dim() == 2 and target_z.dim() == 2:
+                if condition_z.shape != target_z.shape:
+                    raise ValueError(
+                        f"Vector latent shape mismatch: {condition_z.shape} vs {target_z.shape}"
+                    )
             loss = flow_utils.compute_loss(model, target_z, condition_z)
             total_loss += loss.item()
     avg_loss = total_loss / len(dataloader)

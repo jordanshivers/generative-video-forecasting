@@ -27,39 +27,47 @@ class FlowMatchingUtils:
         Compute CFM loss.
         Args:
             model: The velocity prediction model v_theta(x, t, condition)
-            x1: Target data (Frame t+m latent) [B, C, H, W]
-            condition: Conditioning data (Frame t latent) [B, C, H, W]
+            x1: Target latent (frame t+m): [B, latent_dim] (vector VAE) or [B, C, H, W] (spatial)
+            condition: Conditioning latent (frame t): same rank and shape as x1
             t: Timesteps [B] (optional, if None, sample uniformly)
         Returns:
             loss: Mean squared error between predicted and target velocity
         """
         b = x1.shape[0]
         device = x1.device
-        # Ensure condition has same spatial dimensions as x1
+
+        # --- 1D vector latents (e.g. VectorVAE encode_to_latent) ---
+        if x1.dim() == 2:
+            if condition.shape != x1.shape:
+                raise ValueError(
+                    f"condition and x1 must match for vector latents; got {condition.shape} vs {x1.shape}"
+                )
+            x0 = torch.randn_like(x1)
+            if t is None:
+                t = torch.rand(b, device=device)
+            t_expand = t.view(b, 1)
+            t_flow = 1 - (1 - self.sigma_min) * t_expand
+            x_t = t_flow * x0 + t_expand * x1
+            u_t = x1 - (1 - self.sigma_min) * x0
+            t_scaled = t * 1000.0
+            v_pred = model(x_t, condition, t_scaled)
+            loss = F.mse_loss(v_pred, u_t)
+            return loss
+
+        # --- Spatial latents [B, C, H, W] ---
         if condition.shape[2:] != x1.shape[2:]:
             condition = F.interpolate(
                 condition, size=x1.shape[2:], mode="bilinear", align_corners=False
             )
-        # 1. Sample x0 from Normal(0, I) - match x1's shape
         x0 = torch.randn_like(x1)
-        # 2. Sample timesteps t ~ U[0, 1] if not provided
         if t is None:
             t = torch.rand(b, device=device)
-        # Reshape t for broadcasting [B, 1, 1, 1]
         t_expand = t.view(b, 1, 1, 1)
-        # 3. Compute x_t (interpolation)
-        # Optimal Transport path: x_t = (1 - (1-sigma_min)t) * x0 + t * x1
         t_flow = 1 - (1 - self.sigma_min) * t_expand
         x_t = t_flow * x0 + t_expand * x1
-        # 4. Compute target velocity u_t
-        # u_t = dx_t/dt = x1 - (1-sigma_min)x0
         u_t = x1 - (1 - self.sigma_min) * x0
-        # 5. Predict velocity
-        # Scaling time by 1000 for UNet embedding which typically expects larger values
         t_scaled = t * 1000.0
         v_pred = model(x_t, condition, t_scaled)
-        # 6. Ensure v_pred matches u_t spatial dimensions (UNet may change them due to upsampling)
-        # Check both spatial dimensions and channel dimensions
         if v_pred.shape[2] != u_t.shape[2] or v_pred.shape[3] != u_t.shape[3]:
             v_pred = F.interpolate(
                 v_pred,
@@ -67,13 +75,10 @@ class FlowMatchingUtils:
                 mode="bilinear",
                 align_corners=False,
             )
-        # Also ensure channel dimensions match (should be same, but be safe)
         if v_pred.shape[1] != u_t.shape[1]:
-            # This shouldn't happen, but if it does, use a 1x1 conv or take first channels
             if v_pred.shape[1] > u_t.shape[1]:
                 v_pred = v_pred[:, : u_t.shape[1], :, :]
             else:
-                # Pad with zeros if needed
                 padding = torch.zeros(
                     v_pred.shape[0],
                     u_t.shape[1] - v_pred.shape[1],
@@ -83,7 +88,6 @@ class FlowMatchingUtils:
                     dtype=v_pred.dtype,
                 )
                 v_pred = torch.cat([v_pred, padding], dim=1)
-        # 7. MSE Loss
         loss = F.mse_loss(v_pred, u_t)
         return loss
 
@@ -101,44 +105,40 @@ class FlowMatchingUtils:
         """
         b = condition.shape[0]
         device = condition.device
-        # Start from Gaussian noise
         if x0 is None:
             x = torch.randn_like(condition)
         else:
             x = x0
-        # Time steps 0 -> 1
         times = torch.linspace(0, 1, steps + 1, device=device)
         dt = 1.0 / steps
         for i in range(steps):
             t_curr = times[i]
-            # Broadcast t for batch
             t_batch = torch.ones(b, device=device) * t_curr
-            # Predict velocity (scale t by 1000)
             t_scaled = t_batch * 1000.0
             v_pred = model(x, condition, t_scaled)
-            # Ensure v_pred matches x spatial dimensions (UNet may change them)
-            if v_pred.shape[2] != x.shape[2] or v_pred.shape[3] != x.shape[3]:
-                v_pred = F.interpolate(
-                    v_pred,
-                    size=(x.shape[2], x.shape[3]),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-            # Ensure channel dimensions match
-            if v_pred.shape[1] != x.shape[1]:
-                if v_pred.shape[1] > x.shape[1]:
-                    v_pred = v_pred[:, : x.shape[1], :, :]
-                else:
-                    padding = torch.zeros(
-                        v_pred.shape[0],
-                        x.shape[1] - v_pred.shape[1],
-                        v_pred.shape[2],
-                        v_pred.shape[3],
-                        device=v_pred.device,
-                        dtype=v_pred.dtype,
+            if condition.dim() == 2:
+                pass
+            else:
+                if v_pred.shape[2] != x.shape[2] or v_pred.shape[3] != x.shape[3]:
+                    v_pred = F.interpolate(
+                        v_pred,
+                        size=(x.shape[2], x.shape[3]),
+                        mode="bilinear",
+                        align_corners=False,
                     )
-                    v_pred = torch.cat([v_pred, padding], dim=1)
-            # Euler step: x_{t+dt} = x_t + v_t * dt
+                if v_pred.shape[1] != x.shape[1]:
+                    if v_pred.shape[1] > x.shape[1]:
+                        v_pred = v_pred[:, : x.shape[1], :, :]
+                    else:
+                        padding = torch.zeros(
+                            v_pred.shape[0],
+                            x.shape[1] - v_pred.shape[1],
+                            v_pred.shape[2],
+                            v_pred.shape[3],
+                            device=v_pred.device,
+                            dtype=v_pred.dtype,
+                        )
+                        v_pred = torch.cat([v_pred, padding], dim=1)
             x = x + v_pred * dt
         return x
 
