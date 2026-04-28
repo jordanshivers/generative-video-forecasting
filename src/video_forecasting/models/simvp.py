@@ -288,7 +288,7 @@ class SimVP(nn.Module):
             batch * timesteps, hidden_channels, hidden_height, hidden_width
         )
         decoded = self.decoder(translated, skip)
-        return torch.clamp(decoded.reshape(batch, timesteps, channels, height, width), 0, 1)
+        return decoded.reshape(batch, timesteps, channels, height, width)
 
 
 class SimVPSequenceDataset(Dataset):
