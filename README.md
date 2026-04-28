@@ -1,5 +1,3 @@
-# Latent Video Forecasting
-
 This repository implements several approaches for learned forecasting of small video datasets. The shared Python package under `src/video_forecasting/` contains dataset loaders/generators, VAE variants, forecasting models, training loops, runtime helpers, and visualization code.
 
 The current datasets are:
