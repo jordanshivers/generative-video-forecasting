@@ -12,6 +12,11 @@ The current datasets are:
 |:------------:|:---------------------:|
 | ![Sample Moving MNIST sequence](moving_mnist_sequence.gif) | ![Sample elastic disk sequence](elastic_disks_sequence.gif) |
 
+<p align="center">
+  <video src="elastic_disks_sequence_0_simvp_rollout.mp4" controls width="200"></video>
+</p>
+<p align="center"><em>Autoregressive SimVP rollout conditioned on observed context frames for a sample from the elastic disks dataset. Left: model-generated frames. Center: ground truth frames. Right: error map.</em></p>
+
 ## Notebooks
 
 ```text

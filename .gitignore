@@ -11,6 +11,7 @@ vae_reconstruction_frames_mdn_rnn/
 *.ckpt
 *.png
 *.mp4
+!elastic_disks_sequence_0_simvp_rollout.mp4
 
 # Notebook and Python caches
 .ipynb_checkpoints/
