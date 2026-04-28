@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from .models.mdn_rnn import mdn_loss
+
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
