@@ -1,0 +1,31 @@
+# Local data
+data/
+
+# Generated experiment outputs
+outputs/
+output_mp4s/
+vae_reconstruction_frames/
+vae_reconstruction_frames_mdn_rnn/
+*.pt
+*.pth
+*.ckpt
+*.png
+*.mp4
+*.gif
+
+# Notebook and Python caches
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+
+# Local validation harness
+tests/
+run_smoke_tests.py
+
+# System files
+.DS_Store
+**/.DS_Store
+
+# Local editor settings
+.vscode/

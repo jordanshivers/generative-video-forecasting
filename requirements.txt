@@ -1,0 +1,8 @@
+numpy
+matplotlib
+torch
+torchvision
+tqdm
+imageio
+imageio-ffmpeg
+ruff
