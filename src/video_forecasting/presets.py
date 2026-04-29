@@ -8,13 +8,13 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
     "moving_mnist": {
         "max_sequences": 5000,
         "sequence_length": 20,
-        "frame_separation": 5,
+        "frame_separation": 1,
     },
     "elastic_disks": {
         "num_sequences": 2500,
         "max_sequences": 2500,
         "sequence_length": 32,
-        "frame_separation": 5,
+        "frame_separation": 1,
         "num_particles": 6,
         "image_size": 64,
         "render_mode": "hard",
