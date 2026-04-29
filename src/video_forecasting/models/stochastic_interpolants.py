@@ -79,9 +79,9 @@ class StochasticInterpolantUtils:
         spatial = x1.dim() == 4
 
         if x1.dim() == 2:
-            if condition.shape != x1.shape:
+            if condition.dim() != 2 or condition.shape[0] != x1.shape[0]:
                 raise ValueError(
-                    f"condition and x1 must match for vector latents; got {condition.shape} vs {x1.shape}"
+                    f"condition must be [B, D] for vector latents; got {condition.shape}"
                 )
         elif x1.dim() == 4:
             if condition.shape[2:] != x1.shape[2:]:
@@ -128,23 +128,22 @@ class StochasticInterpolantUtils:
         return F.mse_loss(b_pred, drift_target)
 
     @torch.no_grad()
-    def sample(self, model, condition, steps=25, z0=None, t_max=0.999):
+    def sample(self, model, condition, steps=25, z0=None, t_max=0.999, sample_shape=None):
         spatial = condition.dim() == 4
         b = condition.shape[0]
         device = condition.device
         if z0 is None:
+            if sample_shape is None:
+                sample_shape = condition.shape
             if spatial:
                 z0 = torch.randn(
-                    b,
-                    condition.shape[1],
-                    condition.shape[2],
-                    condition.shape[3],
+                    *sample_shape,
                     device=device,
                     dtype=condition.dtype,
                 )
             else:
                 z0 = torch.randn(
-                    b, condition.shape[1], device=device, dtype=condition.dtype
+                    *sample_shape, device=device, dtype=condition.dtype
                 )
         xt = z0
         times = torch.linspace(0, t_max, steps + 1, device=device)
@@ -193,13 +192,34 @@ def sample_latent_stochastic_interpolant(
 ):
     vae.eval()
     drift_model.eval()
-    condition_z = vae.encode_to_latent(condition_image)
+    if condition_image.dim() == 5:
+        bsz, context_frames, channels, height, width = condition_image.shape
+        flat = condition_image.reshape(bsz * context_frames, channels, height, width)
+        condition_z = vae.encode_to_latent(flat)
+        target_size = condition_image[:, -1].shape
+        if condition_z.dim() == 4:
+            _, latent_channels, latent_height, latent_width = condition_z.shape
+            sample_shape = (bsz, latent_channels, latent_height, latent_width)
+            condition_z = condition_z.reshape(
+                bsz,
+                context_frames * latent_channels,
+                latent_height,
+                latent_width,
+            )
+        else:
+            sample_shape = (bsz, condition_z.shape[1])
+            condition_z = condition_z.reshape(bsz, context_frames * condition_z.shape[1])
+    else:
+        condition_z = vae.encode_to_latent(condition_image)
+        target_size = condition_image.shape
+        sample_shape = condition_z.shape
     predicted_z = si_utils.sample(
-        drift_model, condition_z, steps=num_inference_steps
+        drift_model,
+        condition_z,
+        steps=num_inference_steps,
+        sample_shape=sample_shape,
     )
-    predicted_image = vae.decode_from_latent(
-        predicted_z, target_size=condition_image.shape
-    )
+    predicted_image = vae.decode_from_latent(predicted_z, target_size=target_size)
     return torch.clamp(predicted_image, 0.0, 1.0)
 
 
@@ -213,8 +233,19 @@ def sample_pixel_stochastic_interpolant(
 ):
     drift_model.eval()
     condition_image = condition_image.to(device)
+    if condition_image.dim() == 5:
+        bsz, context_frames, channels, height, width = condition_image.shape
+        sample_shape = (bsz, channels, height, width)
+        condition_image = condition_image.reshape(
+            bsz, context_frames * channels, height, width
+        )
+    else:
+        sample_shape = condition_image.shape
     predicted = si_utils.sample(
-        drift_model, condition_image, steps=num_inference_steps
+        drift_model,
+        condition_image,
+        steps=num_inference_steps,
+        sample_shape=sample_shape,
     )
     return torch.clamp(predicted, 0.0, 1.0)
 

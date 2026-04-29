@@ -38,9 +38,9 @@ class FlowMatchingUtils:
 
         # --- 1D vector latents (e.g. VectorVAE encode_to_latent) ---
         if x1.dim() == 2:
-            if condition.shape != x1.shape:
+            if condition.dim() != 2 or condition.shape[0] != x1.shape[0]:
                 raise ValueError(
-                    f"condition and x1 must match for vector latents; got {condition.shape} vs {x1.shape}"
+                    f"condition must be [B, D] for vector latents; got {condition.shape}"
                 )
             x0 = torch.randn_like(x1)
             if t is None:
@@ -92,7 +92,7 @@ class FlowMatchingUtils:
         return loss
 
     @torch.no_grad()
-    def sample(self, model, condition, steps=25, x0=None):
+    def sample(self, model, condition, steps=25, x0=None, sample_shape=None):
         """
         Sample from the model using Euler ODE solver.
         Args:
@@ -106,7 +106,9 @@ class FlowMatchingUtils:
         b = condition.shape[0]
         device = condition.device
         if x0 is None:
-            x = torch.randn_like(condition)
+            if sample_shape is None:
+                sample_shape = condition.shape
+            x = torch.randn(*sample_shape, device=device, dtype=condition.dtype)
         else:
             x = x0
         times = torch.linspace(0, 1, steps + 1, device=device)
@@ -393,6 +395,7 @@ class ConditionalFlowMLP(nn.Module):
     def __init__(
         self,
         latent_dim=64,  # Dimension of 1D latent vector
+        condition_dim=None,
         time_emb_dim=64,
         hidden_dims=[256, 512, 256],  # Hidden layer dimensions
         dropout=0.1,
@@ -400,6 +403,7 @@ class ConditionalFlowMLP(nn.Module):
         super().__init__()
 
         self.latent_dim = latent_dim
+        self.condition_dim = latent_dim if condition_dim is None else condition_dim
         self.time_emb_dim = time_emb_dim
 
         # Time embedding
@@ -411,7 +415,7 @@ class ConditionalFlowMLP(nn.Module):
         )
 
         # Input: concatenate noisy latent, condition latent, and time embedding
-        input_dim = latent_dim + latent_dim + time_emb_dim  # z + condition_z + time_emb
+        input_dim = latent_dim + self.condition_dim + time_emb_dim
 
         # Build MLP layers
         layers = []
@@ -476,16 +480,36 @@ def sample_latent_flow_matching(
     """
     vae.eval()
     flow_matching_model.eval()
-    # Encode condition to latent
-    condition_z = vae.encode_to_latent(condition_image)
+    if condition_image.dim() == 5:
+        bsz, context_frames, channels, height, width = condition_image.shape
+        flat = condition_image.reshape(bsz * context_frames, channels, height, width)
+        condition_z = vae.encode_to_latent(flat)
+        target_size = condition_image[:, -1].shape
+        if condition_z.dim() == 4:
+            _, latent_channels, latent_height, latent_width = condition_z.shape
+            sample_shape = (bsz, latent_channels, latent_height, latent_width)
+            condition_z = condition_z.reshape(
+                bsz,
+                context_frames * latent_channels,
+                latent_height,
+                latent_width,
+            )
+        else:
+            sample_shape = (bsz, condition_z.shape[1])
+            condition_z = condition_z.reshape(bsz, context_frames * condition_z.shape[1])
+    else:
+        condition_z = vae.encode_to_latent(condition_image)
+        target_size = condition_image.shape
+        sample_shape = condition_z.shape
     # Sample in latent space using ODE solver
     predicted_z = flow_utils.sample(
-        flow_matching_model, condition_z, steps=num_inference_steps
+        flow_matching_model,
+        condition_z,
+        steps=num_inference_steps,
+        sample_shape=sample_shape,
     )
     # Decode to image space
-    predicted_image = vae.decode_from_latent(
-        predicted_z, target_size=condition_image.shape
-    )
+    predicted_image = vae.decode_from_latent(predicted_z, target_size=target_size)
     # Clamp to [0, 1]
     predicted_image = torch.clamp(predicted_image, 0.0, 1.0)
     return predicted_image
@@ -513,8 +537,19 @@ def sample_pixel_flow_matching(
     """
     flow_matching_model.eval()
     condition_image = condition_image.to(device)
+    if condition_image.dim() == 5:
+        bsz, context_frames, channels, height, width = condition_image.shape
+        sample_shape = (bsz, channels, height, width)
+        condition_image = condition_image.reshape(
+            bsz, context_frames * channels, height, width
+        )
+    else:
+        sample_shape = condition_image.shape
     predicted_image = flow_utils.sample(
-        flow_matching_model, condition_image, steps=num_inference_steps
+        flow_matching_model,
+        condition_image,
+        steps=num_inference_steps,
+        sample_shape=sample_shape,
     )
     return torch.clamp(predicted_image, 0.0, 1.0)
 

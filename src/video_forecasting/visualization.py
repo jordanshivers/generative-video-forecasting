@@ -72,6 +72,37 @@ def _comparison_frame(pred_frame, gt_frame):
     return (np.clip(composite, 0, 1) * 255).astype(np.uint8)
 
 
+def _sample_context(sample, device):
+    if "context" in sample:
+        context = sample["context"].unsqueeze(0).to(device)
+    else:
+        context = sample["image1"].unsqueeze(0).unsqueeze(1).to(device)
+    return context
+
+
+def _context_last_frame_np(context):
+    if context.dim() == 5:
+        return context[0, -1].detach().cpu().numpy()
+    return context.squeeze(0).detach().cpu().numpy()
+
+
+def _initial_rollout_context(
+    data_array,
+    start_frame,
+    context_frames,
+    frame_separation,
+    normalize_frame,
+):
+    indices = [start_frame + i * frame_separation for i in range(context_frames)]
+    if indices[-1] >= len(data_array):
+        raise ValueError("Not enough frames for the requested context window.")
+    return np.stack([normalize_frame(data_array[i].copy()) for i in indices])
+
+
+def _slide_context(context, predicted_frame):
+    return np.concatenate([context[1:], predicted_frame[None, ...]], axis=0)
+
+
 def save_reconstruction_frame(
     vae, dataset, sample_indices, epoch, save_dir, device="cpu"
 ):
@@ -238,19 +269,19 @@ def visualize_flow_predictions(
     with torch.no_grad():
         for i, idx in enumerate(indices):
             sample = dataset[idx]
-            image1 = sample["image1"].unsqueeze(0).to(device)  # Condition
+            context = _sample_context(sample, device)
             image2 = sample["image2"].unsqueeze(0).to(device)  # Ground truth
             # Generate prediction using latent flow matching
             predicted = sample_latent_flow_matching(
                 flow_matching_model,
                 vae,
-                image1,
+                context,
                 flow_utils,
                 num_inference_steps=25,
                 device=device,
             )
             # Convert to numpy
-            img1_np = image1.squeeze(0).cpu().numpy()
+            img1_np = _context_last_frame_np(context)
             img2_np = image2.squeeze(0).cpu().numpy()
             pred_np = predicted.squeeze(0).cpu().numpy()
             # Display two-channel images as RGB (channel 0 = red, channel 1 = green)
@@ -317,17 +348,17 @@ def visualize_stochastic_interpolant_predictions(
     with torch.no_grad():
         for i, idx in enumerate(indices):
             sample = dataset[idx]
-            image1 = sample["image1"].unsqueeze(0).to(device)
+            context = _sample_context(sample, device)
             image2 = sample["image2"].unsqueeze(0).to(device)
             predicted = sample_latent_stochastic_interpolant(
                 drift_model,
                 vae,
-                image1,
+                context,
                 si_utils,
                 num_inference_steps=num_inference_steps,
                 device=device,
             )
-            img1_np = image1.squeeze(0).cpu().numpy()
+            img1_np = _context_last_frame_np(context)
             img2_np = image2.squeeze(0).cpu().numpy()
             pred_np = predicted.squeeze(0).cpu().numpy()
             if img1_np.shape[0] == 2:
@@ -404,19 +435,19 @@ def visualize_diffusion_predictions(
     with torch.no_grad():
         for i, idx in enumerate(indices):
             sample = dataset[idx]
-            image1 = sample["image1"].unsqueeze(0).to(device)  # Condition
+            context = _sample_context(sample, device)
             image2 = sample["image2"].unsqueeze(0).to(device)  # Ground truth
             # Generate prediction using latent diffusion
             predicted = sample_latent_diffusion(
                 diffusion_model,
                 vae,
-                image1,
+                context,
                 scheduler,
                 num_inference_steps=num_inference_steps,
                 device=device,
             )
             # Convert to numpy
-            img1_np = image1.squeeze(0).cpu().numpy()
+            img1_np = _context_last_frame_np(context)
             img2_np = image2.squeeze(0).cpu().numpy()
             pred_np = predicted.squeeze(0).cpu().numpy()
             # Display two-channel images as RGB (channel 0 = red, channel 1 = green)
@@ -623,6 +654,7 @@ def generate_flow_rollout_movie(
     sequence=None,
     dataset_type="moving_mnist",
     frame_separation=5,
+    context_frames=1,
     start_frame=0,
     num_predictions=20,
     device="cpu",
@@ -673,28 +705,27 @@ def generate_flow_rollout_movie(
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
-    # Start with real frame
-    current_frame = data_array[start_frame].copy()  # [C, H, W]
-    current_frame_norm = normalize_frame(current_frame)
+    context = _initial_rollout_context(
+        data_array, start_frame, context_frames, frame_separation, normalize_frame
+    )
     # Store predictions and ground truth
     predicted_frames = []
     ground_truth_frames = []
     error_maps = []
     # First frame is real
-    predicted_frames.append(current_frame_norm.copy())
-    if start_frame < T:
-        ground_truth_frames.append(current_frame_norm.copy())
+    predicted_frames.append(context[-1].copy())
+    last_context_idx = start_frame + (context_frames - 1) * frame_separation
+    if last_context_idx < T:
+        ground_truth_frames.append(context[-1].copy())
     else:
         ground_truth_frames.append(None)
     print(f"Generating {num_predictions} prediction steps...")
     print(f"  Starting from frame {start_frame}")
     with torch.no_grad():
         for step in tqdm(range(num_predictions), desc="Generating predictions"):
-            # Convert current frame to tensor
             current_tensor = (
-                torch.from_numpy(current_frame_norm).float().unsqueeze(0).to(device)
-            )  # [1, C, H, W]
-            # Predict next frame using latent flow matching
+                torch.from_numpy(context).float().unsqueeze(0).to(device)
+            )
             predicted_tensor = sample_latent_flow_matching(
                 flow_matching_model,
                 vae,
@@ -709,7 +740,7 @@ def generate_flow_rollout_movie(
             # Store prediction
             predicted_frames.append(predicted_norm.copy())
             # Get ground truth if available
-            gt_frame_idx = start_frame + (step + 1) * frame_separation
+            gt_frame_idx = start_frame + (context_frames + step) * frame_separation
             if gt_frame_idx < T:
                 gt_frame = normalize_frame(data_array[gt_frame_idx].copy())
                 ground_truth_frames.append(gt_frame.copy())
@@ -719,8 +750,7 @@ def generate_flow_rollout_movie(
             else:
                 ground_truth_frames.append(None)
                 error_maps.append(None)
-            # Update current frame for next iteration
-            current_frame_norm = predicted_norm.copy()
+            context = _slide_context(context, predicted_norm)
     # Create video frames
     print("Creating video frames...")
     video_frames = []
@@ -789,6 +819,7 @@ def generate_stochastic_interpolant_rollout_movie(
     sequence=None,
     dataset_type="moving_mnist",
     frame_separation=5,
+    context_frames=1,
     start_frame=0,
     num_predictions=20,
     device="cpu",
@@ -816,14 +847,16 @@ def generate_stochastic_interpolant_rollout_movie(
 
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
-    current_frame = data_array[start_frame].copy()
-    current_frame_norm = normalize_frame(current_frame)
+    context = _initial_rollout_context(
+        data_array, start_frame, context_frames, frame_separation, normalize_frame
+    )
     predicted_frames = []
     ground_truth_frames = []
     error_maps = []
-    predicted_frames.append(current_frame_norm.copy())
-    if start_frame < T:
-        ground_truth_frames.append(current_frame_norm.copy())
+    predicted_frames.append(context[-1].copy())
+    last_context_idx = start_frame + (context_frames - 1) * frame_separation
+    if last_context_idx < T:
+        ground_truth_frames.append(context[-1].copy())
     else:
         ground_truth_frames.append(None)
     print(f"Generating {num_predictions} prediction steps...")
@@ -831,7 +864,7 @@ def generate_stochastic_interpolant_rollout_movie(
     with torch.no_grad():
         for step in tqdm(range(num_predictions), desc="Generating predictions"):
             current_tensor = (
-                torch.from_numpy(current_frame_norm).float().unsqueeze(0).to(device)
+                torch.from_numpy(context).float().unsqueeze(0).to(device)
             )
             predicted_tensor = sample_latent_stochastic_interpolant(
                 drift_model,
@@ -844,7 +877,7 @@ def generate_stochastic_interpolant_rollout_movie(
             predicted_norm = predicted_tensor.squeeze(0).cpu().numpy()
             predicted_norm = np.clip(predicted_norm, 0, 1)
             predicted_frames.append(predicted_norm.copy())
-            gt_frame_idx = start_frame + (step + 1) * frame_separation
+            gt_frame_idx = start_frame + (context_frames + step) * frame_separation
             if gt_frame_idx < T:
                 gt_frame = normalize_frame(data_array[gt_frame_idx].copy())
                 ground_truth_frames.append(gt_frame.copy())
@@ -853,7 +886,7 @@ def generate_stochastic_interpolant_rollout_movie(
             else:
                 ground_truth_frames.append(None)
                 error_maps.append(None)
-            current_frame_norm = predicted_norm.copy()
+            context = _slide_context(context, predicted_norm)
     print("Creating video frames...")
     video_frames = []
     for i in range(len(predicted_frames)):
@@ -915,6 +948,7 @@ def generate_diffusion_rollout_movie(
     sequence=None,
     dataset_type="moving_mnist",
     frame_separation=5,
+    context_frames=1,
     start_frame=0,
     num_predictions=20,
     device="cpu",
@@ -965,28 +999,27 @@ def generate_diffusion_rollout_movie(
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
-    # Start with real frame
-    current_frame = data_array[start_frame].copy()  # [C, H, W]
-    current_frame_norm = normalize_frame(current_frame)
+    context = _initial_rollout_context(
+        data_array, start_frame, context_frames, frame_separation, normalize_frame
+    )
     # Store predictions and ground truth
     predicted_frames = []
     ground_truth_frames = []
     error_maps = []
     # First frame is real
-    predicted_frames.append(current_frame_norm.copy())
-    if start_frame < T:
-        ground_truth_frames.append(current_frame_norm.copy())
+    predicted_frames.append(context[-1].copy())
+    last_context_idx = start_frame + (context_frames - 1) * frame_separation
+    if last_context_idx < T:
+        ground_truth_frames.append(context[-1].copy())
     else:
         ground_truth_frames.append(None)
     print(f"Generating {num_predictions} prediction steps...")
     print(f"  Starting from frame {start_frame}")
     with torch.no_grad():
         for step in tqdm(range(num_predictions), desc="Generating predictions"):
-            # Convert current frame to tensor
             current_tensor = (
-                torch.from_numpy(current_frame_norm).float().unsqueeze(0).to(device)
-            )  # [1, C, H, W]
-            # Predict next frame using latent diffusion
+                torch.from_numpy(context).float().unsqueeze(0).to(device)
+            )
             predicted_tensor = sample_latent_diffusion(
                 diffusion_model,
                 vae,
@@ -1001,7 +1034,7 @@ def generate_diffusion_rollout_movie(
             # Store prediction
             predicted_frames.append(predicted_norm.copy())
             # Get ground truth if available
-            gt_frame_idx = start_frame + (step + 1) * frame_separation
+            gt_frame_idx = start_frame + (context_frames + step) * frame_separation
             if gt_frame_idx < T:
                 gt_frame = normalize_frame(data_array[gt_frame_idx].copy())
                 ground_truth_frames.append(gt_frame.copy())
@@ -1011,8 +1044,7 @@ def generate_diffusion_rollout_movie(
             else:
                 ground_truth_frames.append(None)
                 error_maps.append(None)
-            # Update current frame for next iteration
-            current_frame_norm = predicted_norm.copy()
+            context = _slide_context(context, predicted_norm)
     # Create video frames
     print("Creating video frames...")
     video_frames = []
@@ -1239,16 +1271,16 @@ def visualize_pixel_flow_predictions(
     with torch.no_grad():
         for row, idx in enumerate(indices):
             sample = dataset[idx]
-            image1 = sample["image1"].unsqueeze(0).to(device)
+            context = _sample_context(sample, device)
             image2 = sample["image2"].unsqueeze(0).to(device)
             predicted = sample_pixel_flow_matching(
                 flow_matching_model,
-                image1,
+                context,
                 flow_utils,
                 num_inference_steps=num_inference_steps,
                 device=device,
             )
-            img1_np = image1.squeeze(0).cpu().numpy()
+            img1_np = _context_last_frame_np(context)
             img2_np = image2.squeeze(0).cpu().numpy()
             pred_np = predicted.squeeze(0).cpu().numpy()
             for col, frame, title in [
@@ -1296,16 +1328,16 @@ def visualize_pixel_diffusion_predictions(
     with torch.no_grad():
         for row, idx in enumerate(indices):
             sample = dataset[idx]
-            image1 = sample["image1"].unsqueeze(0).to(device)
+            context = _sample_context(sample, device)
             image2 = sample["image2"].unsqueeze(0).to(device)
             predicted = sample_pixel_diffusion(
                 diffusion_model,
-                image1,
+                context,
                 scheduler,
                 num_inference_steps=num_inference_steps,
                 device=device,
             )
-            img1_np = image1.squeeze(0).cpu().numpy()
+            img1_np = _context_last_frame_np(context)
             img2_np = image2.squeeze(0).cpu().numpy()
             pred_np = predicted.squeeze(0).cpu().numpy()
             for col, frame, title in [
@@ -1342,6 +1374,7 @@ def generate_pixel_flow_rollout_movie(
     sequence,
     dataset_type="moving_mnist",
     frame_separation=5,
+    context_frames=1,
     start_frame=0,
     num_predictions=20,
     device="cpu",
@@ -1353,13 +1386,16 @@ def generate_pixel_flow_rollout_movie(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     data_array = np.asarray(sequence, dtype=np.float32)
-    current_frame = np.clip(data_array[start_frame].copy(), 0, 1)
-    predicted_frames = [current_frame.copy()]
-    ground_truth_frames = [current_frame.copy()]
+    normalize_frame = lambda frame: np.clip(frame.astype(np.float32), 0, 1)
+    context = _initial_rollout_context(
+        data_array, start_frame, context_frames, frame_separation, normalize_frame
+    )
+    predicted_frames = [context[-1].copy()]
+    ground_truth_frames = [context[-1].copy()]
     with torch.no_grad():
         for step in tqdm(range(num_predictions), desc="Generating predictions"):
             current_tensor = (
-                torch.from_numpy(current_frame).float().unsqueeze(0).to(device)
+                torch.from_numpy(context).float().unsqueeze(0).to(device)
             )
             predicted = sample_pixel_flow_matching(
                 flow_matching_model,
@@ -1368,12 +1404,13 @@ def generate_pixel_flow_rollout_movie(
                 num_inference_steps=num_inference_steps,
                 device=device,
             )
-            current_frame = predicted.squeeze(0).cpu().numpy()
-            predicted_frames.append(current_frame.copy())
-            gt_idx = start_frame + (step + 1) * frame_separation
+            predicted_frame = predicted.squeeze(0).cpu().numpy()
+            predicted_frames.append(predicted_frame.copy())
+            gt_idx = start_frame + (context_frames + step) * frame_separation
             ground_truth_frames.append(
                 data_array[gt_idx].copy() if gt_idx < len(data_array) else None
             )
+            context = _slide_context(context, predicted_frame)
     video_frames = [
         _comparison_frame(pred, gt)
         for pred, gt in zip(predicted_frames, ground_truth_frames)
@@ -1402,16 +1439,16 @@ def visualize_pixel_stochastic_interpolant_predictions(
     with torch.no_grad():
         for row, idx in enumerate(indices):
             sample = dataset[idx]
-            image1 = sample["image1"].unsqueeze(0).to(device)
+            context = _sample_context(sample, device)
             image2 = sample["image2"].unsqueeze(0).to(device)
             predicted = sample_pixel_stochastic_interpolant(
                 drift_model,
-                image1,
+                context,
                 si_utils,
                 num_inference_steps=num_inference_steps,
                 device=device,
             )
-            img1_np = image1.squeeze(0).cpu().numpy()
+            img1_np = _context_last_frame_np(context)
             img2_np = image2.squeeze(0).cpu().numpy()
             pred_np = predicted.squeeze(0).cpu().numpy()
             for col, frame, title in [
@@ -1448,6 +1485,7 @@ def generate_pixel_stochastic_interpolant_rollout_movie(
     sequence,
     dataset_type="moving_mnist",
     frame_separation=5,
+    context_frames=1,
     start_frame=0,
     num_predictions=20,
     device="cpu",
@@ -1458,13 +1496,16 @@ def generate_pixel_stochastic_interpolant_rollout_movie(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     data_array = np.asarray(sequence, dtype=np.float32)
-    current_frame = np.clip(data_array[start_frame].copy(), 0, 1)
-    predicted_frames = [current_frame.copy()]
-    ground_truth_frames = [current_frame.copy()]
+    normalize_frame = lambda frame: np.clip(frame.astype(np.float32), 0, 1)
+    context = _initial_rollout_context(
+        data_array, start_frame, context_frames, frame_separation, normalize_frame
+    )
+    predicted_frames = [context[-1].copy()]
+    ground_truth_frames = [context[-1].copy()]
     with torch.no_grad():
         for step in tqdm(range(num_predictions), desc="Generating predictions"):
             current_tensor = (
-                torch.from_numpy(current_frame).float().unsqueeze(0).to(device)
+                torch.from_numpy(context).float().unsqueeze(0).to(device)
             )
             predicted = sample_pixel_stochastic_interpolant(
                 drift_model,
@@ -1473,12 +1514,13 @@ def generate_pixel_stochastic_interpolant_rollout_movie(
                 num_inference_steps=num_inference_steps,
                 device=device,
             )
-            current_frame = predicted.squeeze(0).cpu().numpy()
-            predicted_frames.append(current_frame.copy())
-            gt_idx = start_frame + (step + 1) * frame_separation
+            predicted_frame = predicted.squeeze(0).cpu().numpy()
+            predicted_frames.append(predicted_frame.copy())
+            gt_idx = start_frame + (context_frames + step) * frame_separation
             ground_truth_frames.append(
                 data_array[gt_idx].copy() if gt_idx < len(data_array) else None
             )
+            context = _slide_context(context, predicted_frame)
     video_frames = [
         _comparison_frame(pred, gt)
         for pred, gt in zip(predicted_frames, ground_truth_frames)
@@ -1498,6 +1540,7 @@ def generate_pixel_diffusion_rollout_movie(
     sequence,
     dataset_type="moving_mnist",
     frame_separation=5,
+    context_frames=1,
     start_frame=0,
     num_predictions=20,
     device="cpu",
@@ -1509,13 +1552,16 @@ def generate_pixel_diffusion_rollout_movie(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     data_array = np.asarray(sequence, dtype=np.float32)
-    current_frame = np.clip(data_array[start_frame].copy(), 0, 1)
-    predicted_frames = [current_frame.copy()]
-    ground_truth_frames = [current_frame.copy()]
+    normalize_frame = lambda frame: np.clip(frame.astype(np.float32), 0, 1)
+    context = _initial_rollout_context(
+        data_array, start_frame, context_frames, frame_separation, normalize_frame
+    )
+    predicted_frames = [context[-1].copy()]
+    ground_truth_frames = [context[-1].copy()]
     with torch.no_grad():
         for step in tqdm(range(num_predictions), desc="Generating predictions"):
             current_tensor = (
-                torch.from_numpy(current_frame).float().unsqueeze(0).to(device)
+                torch.from_numpy(context).float().unsqueeze(0).to(device)
             )
             predicted = sample_pixel_diffusion(
                 diffusion_model,
@@ -1524,12 +1570,13 @@ def generate_pixel_diffusion_rollout_movie(
                 num_inference_steps=num_inference_steps,
                 device=device,
             )
-            current_frame = predicted.squeeze(0).cpu().numpy()
-            predicted_frames.append(current_frame.copy())
-            gt_idx = start_frame + (step + 1) * frame_separation
+            predicted_frame = predicted.squeeze(0).cpu().numpy()
+            predicted_frames.append(predicted_frame.copy())
+            gt_idx = start_frame + (context_frames + step) * frame_separation
             ground_truth_frames.append(
                 data_array[gt_idx].copy() if gt_idx < len(data_array) else None
             )
+            context = _slide_context(context, predicted_frame)
     video_frames = [
         _comparison_frame(pred, gt)
         for pred, gt in zip(predicted_frames, ground_truth_frames)

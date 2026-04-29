@@ -120,6 +120,7 @@ class ConditionalLatentMLP(nn.Module):
     def __init__(
         self,
         latent_dim=64,  # Dimension of 1D latent vector
+        condition_dim=None,
         time_emb_dim=64,
         hidden_dims=[256, 512, 256],  # Hidden layer dimensions
         dropout=0.1,
@@ -127,6 +128,7 @@ class ConditionalLatentMLP(nn.Module):
         super().__init__()
 
         self.latent_dim = latent_dim
+        self.condition_dim = latent_dim if condition_dim is None else condition_dim
         self.time_emb_dim = time_emb_dim
 
         # Time embedding
@@ -138,7 +140,7 @@ class ConditionalLatentMLP(nn.Module):
         )
 
         # Input: concatenate noisy latent, condition latent, and time embedding
-        input_dim = latent_dim + latent_dim + time_emb_dim  # z + condition_z + time_emb
+        input_dim = latent_dim + self.condition_dim + time_emb_dim
 
         # Build MLP layers
         layers = []
@@ -203,11 +205,20 @@ def sample_latent_diffusion(
     """
     vae.eval()
     diffusion_model.eval()
-    # Encode condition to latent
-    condition_z = vae.encode_to_latent(condition_image)  # [1, latent_dim]
+    if condition_image.dim() == 5:
+        bsz, context_frames, channels, height, width = condition_image.shape
+        flat = condition_image.reshape(bsz * context_frames, channels, height, width)
+        condition_z = vae.encode_to_latent(flat)
+        target_size = condition_image[:, -1].shape
+        sample_shape = (bsz, condition_z.shape[1])
+        condition_z = condition_z.reshape(bsz, context_frames * condition_z.shape[1])
+    else:
+        condition_z = vae.encode_to_latent(condition_image)
+        target_size = condition_image.shape
+        sample_shape = condition_z.shape
 
     # Start from pure noise
-    z = torch.randn_like(condition_z)  # [1, latent_dim]
+    z = torch.randn(*sample_shape, device=condition_z.device, dtype=condition_z.dtype)
 
     # Create timestep schedule for inference (can use fewer steps than training)
     timesteps = torch.linspace(
@@ -252,7 +263,7 @@ def sample_latent_diffusion(
             ) / torch.sqrt(alpha_t)
 
     # Decode to image space
-    predicted_image = vae.decode_from_latent(z, target_size=condition_image.shape)
+    predicted_image = vae.decode_from_latent(z, target_size=target_size)
     # Clamp to [0, 1]
     predicted_image = torch.clamp(predicted_image, 0.0, 1.0)
     return predicted_image
@@ -280,7 +291,15 @@ def sample_pixel_diffusion(
     """
     diffusion_model.eval()
     condition_image = condition_image.to(device)
-    x = torch.randn_like(condition_image)
+    if condition_image.dim() == 5:
+        bsz, context_frames, channels, height, width = condition_image.shape
+        sample_shape = (bsz, channels, height, width)
+        condition_image = condition_image.reshape(
+            bsz, context_frames * channels, height, width
+        )
+    else:
+        sample_shape = condition_image.shape
+    x = torch.randn(*sample_shape, device=device, dtype=condition_image.dtype)
     timesteps = torch.linspace(
         scheduler.num_timesteps - 1, 0, num_inference_steps, device=device
     ).long()

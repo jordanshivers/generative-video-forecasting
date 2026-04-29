@@ -63,6 +63,147 @@ class FrameOnlyDataset(Dataset):
         return tensor
 
 
+class ContextFramePredictionDataset(Dataset):
+    """Frame-window dataset with K context frames and one future target."""
+
+    def __init__(self, frame_prediction_dataset, context_frames: int = 1):
+        self.base_dataset = frame_prediction_dataset
+        self.context_frames = int(context_frames)
+        if self.context_frames < 1:
+            raise ValueError("context_frames must be positive.")
+        self.frame_separation = frame_prediction_dataset.frame_separation
+        self.sequences = frame_prediction_dataset.sequences
+        self.normalize = getattr(frame_prediction_dataset, "normalize", True)
+        self.target_height = getattr(frame_prediction_dataset, "target_height", None)
+        self.target_width = getattr(frame_prediction_dataset, "target_width", None)
+        self.windows: list[tuple[int, int]] = []
+        for seq_idx, seq in enumerate(frame_prediction_dataset.sequences):
+            max_start = len(seq) - self.context_frames * self.frame_separation - 1
+            for start_idx in range(max_start + 1):
+                self.windows.append((seq_idx, start_idx))
+        if not self.windows:
+            raise ValueError("No context-frame prediction windows available.")
+
+    def __len__(self) -> int:
+        return len(self.windows)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor | int]:
+        if idx < 0 or idx >= len(self.windows):
+            raise IndexError("ContextFramePredictionDataset index out of range")
+        seq_idx, start_idx = self.windows[idx]
+        seq = self.base_dataset.sequences[seq_idx]
+        context_indices = [
+            start_idx + i * self.frame_separation for i in range(self.context_frames)
+        ]
+        target_idx = start_idx + self.context_frames * self.frame_separation
+        context_np = np.stack([seq[i].copy() for i in context_indices])
+        image1_np = context_np[-1].copy()
+        image2_np = seq[target_idx].copy()
+        return {
+            "context": torch.from_numpy(context_np).float(),
+            "image1": torch.from_numpy(image1_np).float(),
+            "image2": torch.from_numpy(image2_np).float(),
+            "seq_idx": seq_idx,
+            "start_idx": start_idx,
+            "frame_idx1": context_indices[-1],
+            "frame_idx2": target_idx,
+        }
+
+    def _normalize(self, img: np.ndarray) -> np.ndarray:
+        return self.base_dataset._normalize(img)
+
+    def _pad(self, img: np.ndarray) -> np.ndarray:
+        return self.base_dataset._pad(img)
+
+
+def get_condition_frames(batch, device):
+    if "context" in batch:
+        return batch["context"].to(device)
+    return batch["image1"].to(device).unsqueeze(1)
+
+
+def stack_pixel_context(context):
+    if context.dim() == 4:
+        return context
+    if context.dim() != 5:
+        raise ValueError(f"context must be 4D or 5D, got {context.shape}")
+    bsz, context_frames, channels, height, width = context.shape
+    return context.reshape(bsz, context_frames * channels, height, width)
+
+
+def _resize_context_to_target(context, target):
+    if context.shape[-2:] == target.shape[-2:]:
+        return context
+    if context.dim() == 4:
+        return F.interpolate(
+            context, size=target.shape[-2:], mode="bilinear", align_corners=False
+        )
+    bsz, context_frames, channels, _, _ = context.shape
+    flat = context.reshape(bsz * context_frames, channels, *context.shape[-2:])
+    flat = F.interpolate(
+        flat, size=target.shape[-2:], mode="bilinear", align_corners=False
+    )
+    return flat.reshape(bsz, context_frames, channels, *target.shape[-2:])
+
+
+def encode_stack_spatial_context(vae, context):
+    if context.dim() == 4:
+        return vae.encode_to_latent(context)
+    bsz, context_frames, channels, height, width = context.shape
+    flat = context.reshape(bsz * context_frames, channels, height, width)
+    latents = vae.encode_to_latent(flat)
+    if latents.dim() != 4:
+        raise ValueError(f"Expected spatial latents, got shape {latents.shape}")
+    _, latent_channels, latent_height, latent_width = latents.shape
+    return latents.reshape(
+        bsz, context_frames * latent_channels, latent_height, latent_width
+    )
+
+
+def encode_stack_vector_context(vae, context):
+    if context.dim() == 4:
+        return vae.encode_to_latent(context)
+    bsz, context_frames, channels, height, width = context.shape
+    flat = context.reshape(bsz * context_frames, channels, height, width)
+    latents = vae.encode_to_latent(flat)
+    if latents.dim() != 2:
+        raise ValueError(f"Expected vector latents, got shape {latents.shape}")
+    return latents.reshape(bsz, context_frames * latents.shape[1])
+
+
+def encode_stack_context(vae, context, target_z):
+    if target_z.dim() == 4:
+        return encode_stack_spatial_context(vae, context)
+    if target_z.dim() == 2:
+        return encode_stack_vector_context(vae, context)
+    raise ValueError(f"target_z must be 2D or 4D, got shape {target_z.shape}")
+
+
+def _pixel_condition_and_target(batch, device):
+    target = batch["image2"].to(device)
+    context = get_condition_frames(batch, device)
+    context = _resize_context_to_target(context, target)
+    return stack_pixel_context(context), target
+
+
+def _latent_condition_and_target(vae, batch, device):
+    target = batch["image2"].to(device)
+    context = get_condition_frames(batch, device)
+    context = _resize_context_to_target(context, target)
+    with torch.no_grad():
+        target_z = vae.encode_to_latent(target)
+        condition_z = encode_stack_context(vae, context, target_z)
+    if condition_z.dim() == 4 and target_z.dim() == 4:
+        if condition_z.shape[2:] != target_z.shape[2:]:
+            condition_z = F.interpolate(
+                condition_z,
+                size=target_z.shape[2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+    return condition_z, target_z
+
+
 def train_vae_epoch(model, dataloader, optimizer, device, beta=1.0):
     """Train a VAE for one epoch."""
     model.train()
@@ -138,41 +279,13 @@ def train_flow_matching_epoch(model, vae, dataloader, flow_utils, optimizer, dev
     vae.eval()  # Freeze VAE
     total_loss = 0.0
     for batch in tqdm(dataloader, desc="Training Flow Matching"):
-        image1 = batch["image1"].to(device)  # Condition (current frame)
-        image2 = batch["image2"].to(device)  # Target (future frame)
-        # Ensure image1 and image2 have the same spatial dimensions
-        if image1.shape[2:] != image2.shape[2:]:
-            target_h, target_w = image2.shape[2], image2.shape[3]
-            image1 = F.interpolate(
-                image1, size=(target_h, target_w), mode="bilinear", align_corners=False
-            )
-        # Encode to latent space
-        with torch.no_grad():
-            condition_z = vae.encode_to_latent(image1)
-            target_z = vae.encode_to_latent(image2)
-        if condition_z.dim() == 4 and target_z.dim() == 4:
-            if condition_z.shape[2:] != target_z.shape[2:]:
-                target_h, target_w = target_z.shape[2], target_z.shape[3]
-                condition_z = F.interpolate(
-                    condition_z,
-                    size=(target_h, target_w),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-        elif condition_z.dim() == 2 and target_z.dim() == 2:
-            if condition_z.shape != target_z.shape:
-                raise ValueError(
-                    f"Vector latent shape mismatch: {condition_z.shape} vs {target_z.shape}"
-                )
-        # Compute CFM loss
+        condition_z, target_z = _latent_condition_and_target(vae, batch, device)
         loss = flow_utils.compute_loss(model, target_z, condition_z)
-        # Backward pass
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss
+    return total_loss / len(dataloader)
 
 
 def evaluate_flow_matching(model, vae, dataloader, flow_utils, device):
@@ -182,36 +295,10 @@ def evaluate_flow_matching(model, vae, dataloader, flow_utils, device):
     total_loss = 0.0
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Flow Matching"):
-            image1 = batch["image1"].to(device)
-            image2 = batch["image2"].to(device)
-            if image1.shape[2:] != image2.shape[2:]:
-                target_h, target_w = image2.shape[2], image2.shape[3]
-                image1 = F.interpolate(
-                    image1,
-                    size=(target_h, target_w),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-            condition_z = vae.encode_to_latent(image1)
-            target_z = vae.encode_to_latent(image2)
-            if condition_z.dim() == 4 and target_z.dim() == 4:
-                if condition_z.shape[2:] != target_z.shape[2:]:
-                    target_h, target_w = target_z.shape[2], target_z.shape[3]
-                    condition_z = F.interpolate(
-                        condition_z,
-                        size=(target_h, target_w),
-                        mode="bilinear",
-                        align_corners=False,
-                    )
-            elif condition_z.dim() == 2 and target_z.dim() == 2:
-                if condition_z.shape != target_z.shape:
-                    raise ValueError(
-                        f"Vector latent shape mismatch: {condition_z.shape} vs {target_z.shape}"
-                    )
+            condition_z, target_z = _latent_condition_and_target(vae, batch, device)
             loss = flow_utils.compute_loss(model, target_z, condition_z)
             total_loss += loss.item()
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss
+    return total_loss / len(dataloader)
 
 
 def train_pixel_flow_matching_epoch(model, dataloader, flow_utils, optimizer, device):
@@ -219,13 +306,8 @@ def train_pixel_flow_matching_epoch(model, dataloader, flow_utils, optimizer, de
     model.train()
     total_loss = 0.0
     for batch in tqdm(dataloader, desc="Training Pixel Flow Matching"):
-        image1 = batch["image1"].to(device)
-        image2 = batch["image2"].to(device)
-        if image1.shape[2:] != image2.shape[2:]:
-            image1 = F.interpolate(
-                image1, size=image2.shape[2:], mode="bilinear", align_corners=False
-            )
-        loss = flow_utils.compute_loss(model, image2, image1)
+        condition, target = _pixel_condition_and_target(batch, device)
+        loss = flow_utils.compute_loss(model, target, condition)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -239,13 +321,8 @@ def evaluate_pixel_flow_matching(model, dataloader, flow_utils, device):
     total_loss = 0.0
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Pixel Flow Matching"):
-            image1 = batch["image1"].to(device)
-            image2 = batch["image2"].to(device)
-            if image1.shape[2:] != image2.shape[2:]:
-                image1 = F.interpolate(
-                    image1, size=image2.shape[2:], mode="bilinear", align_corners=False
-                )
-            total_loss += flow_utils.compute_loss(model, image2, image1).item()
+            condition, target = _pixel_condition_and_target(batch, device)
+            total_loss += flow_utils.compute_loss(model, target, condition).item()
     return total_loss / len(dataloader)
 
 
@@ -255,30 +332,7 @@ def train_stochastic_interpolant_epoch(model, vae, dataloader, si_utils, optimiz
     vae.eval()
     total_loss = 0.0
     for batch in tqdm(dataloader, desc="Training Stochastic Interpolant"):
-        image1 = batch["image1"].to(device)
-        image2 = batch["image2"].to(device)
-        if image1.shape[2:] != image2.shape[2:]:
-            target_h, target_w = image2.shape[2], image2.shape[3]
-            image1 = F.interpolate(
-                image1, size=(target_h, target_w), mode="bilinear", align_corners=False
-            )
-        with torch.no_grad():
-            condition_z = vae.encode_to_latent(image1)
-            target_z = vae.encode_to_latent(image2)
-        if condition_z.dim() == 4 and target_z.dim() == 4:
-            if condition_z.shape[2:] != target_z.shape[2:]:
-                target_h, target_w = target_z.shape[2], target_z.shape[3]
-                condition_z = F.interpolate(
-                    condition_z,
-                    size=(target_h, target_w),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-        elif condition_z.dim() == 2 and target_z.dim() == 2:
-            if condition_z.shape != target_z.shape:
-                raise ValueError(
-                    f"Vector latent shape mismatch: {condition_z.shape} vs {target_z.shape}"
-                )
+        condition_z, target_z = _latent_condition_and_target(vae, batch, device)
         loss = si_utils.compute_loss(model, target_z, condition_z)
         optimizer.zero_grad()
         loss.backward()
@@ -294,32 +348,7 @@ def evaluate_stochastic_interpolant(model, vae, dataloader, si_utils, device):
     total_loss = 0.0
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Stochastic Interpolant"):
-            image1 = batch["image1"].to(device)
-            image2 = batch["image2"].to(device)
-            if image1.shape[2:] != image2.shape[2:]:
-                target_h, target_w = image2.shape[2], image2.shape[3]
-                image1 = F.interpolate(
-                    image1,
-                    size=(target_h, target_w),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-            condition_z = vae.encode_to_latent(image1)
-            target_z = vae.encode_to_latent(image2)
-            if condition_z.dim() == 4 and target_z.dim() == 4:
-                if condition_z.shape[2:] != target_z.shape[2:]:
-                    target_h, target_w = target_z.shape[2], target_z.shape[3]
-                    condition_z = F.interpolate(
-                        condition_z,
-                        size=(target_h, target_w),
-                        mode="bilinear",
-                        align_corners=False,
-                    )
-            elif condition_z.dim() == 2 and target_z.dim() == 2:
-                if condition_z.shape != target_z.shape:
-                    raise ValueError(
-                        f"Vector latent shape mismatch: {condition_z.shape} vs {target_z.shape}"
-                    )
+            condition_z, target_z = _latent_condition_and_target(vae, batch, device)
             loss = si_utils.compute_loss(model, target_z, condition_z)
             total_loss += loss.item()
     return total_loss / len(dataloader)
@@ -330,13 +359,8 @@ def train_pixel_stochastic_interpolant_epoch(model, dataloader, si_utils, optimi
     model.train()
     total_loss = 0.0
     for batch in tqdm(dataloader, desc="Training Pixel Stochastic Interpolant"):
-        image1 = batch["image1"].to(device)
-        image2 = batch["image2"].to(device)
-        if image1.shape[2:] != image2.shape[2:]:
-            image1 = F.interpolate(
-                image1, size=image2.shape[2:], mode="bilinear", align_corners=False
-            )
-        loss = si_utils.compute_loss(model, image2, image1)
+        condition, target = _pixel_condition_and_target(batch, device)
+        loss = si_utils.compute_loss(model, target, condition)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -350,13 +374,8 @@ def evaluate_pixel_stochastic_interpolant(model, dataloader, si_utils, device):
     total_loss = 0.0
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Pixel Stochastic Interpolant"):
-            image1 = batch["image1"].to(device)
-            image2 = batch["image2"].to(device)
-            if image1.shape[2:] != image2.shape[2:]:
-                image1 = F.interpolate(
-                    image1, size=image2.shape[2:], mode="bilinear", align_corners=False
-                )
-            total_loss += si_utils.compute_loss(model, image2, image1).item()
+            condition, target = _pixel_condition_and_target(batch, device)
+            total_loss += si_utils.compute_loss(model, target, condition).item()
     return total_loss / len(dataloader)
 
 
@@ -366,44 +385,18 @@ def train_diffusion_epoch(model, vae, dataloader, scheduler, optimizer, device):
     vae.eval()  # Freeze VAE
     total_loss = 0.0
     for batch in tqdm(dataloader, desc="Training Diffusion"):
-        image1 = batch["image1"].to(device)  # Condition (current frame)
-        image2 = batch["image2"].to(device)  # Target (future frame)
-        # Ensure image1 and image2 have the same spatial dimensions
-        if image1.shape[2:] != image2.shape[2:]:
-            target_h, target_w = image2.shape[2], image2.shape[3]
-            image1 = F.interpolate(
-                image1, size=(target_h, target_w), mode="bilinear", align_corners=False
-            )
-        # Encode to latent space (1D vectors)
-        with torch.no_grad():
-            condition_z = vae.encode_to_latent(image1)  # [B, latent_dim]
-            target_z = vae.encode_to_latent(image2)  # [B, latent_dim]
-
-        # Sample timesteps
+        condition_z, target_z = _latent_condition_and_target(vae, batch, device)
         t = scheduler.sample_timesteps(target_z.shape[0], device)
-
-        # Sample noise
         noise = torch.randn_like(target_z)
-
-        # Add noise to target latents
         noisy_z = scheduler.add_noise(target_z, t, noise)
-
-        # Scale timesteps for time embedding (model expects [0, 1000])
         t_scaled = t.float() * (1000.0 / scheduler.num_timesteps)
-
-        # Predict noise
         noise_pred = model(noisy_z, condition_z, t_scaled)
-
-        # Compute loss (MSE between predicted and actual noise)
         loss = F.mse_loss(noise_pred, noise)
-
-        # Backward pass
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss
+    return total_loss / len(dataloader)
 
 
 def train_pixel_diffusion_epoch(model, dataloader, scheduler, optimizer, device):
@@ -411,17 +404,12 @@ def train_pixel_diffusion_epoch(model, dataloader, scheduler, optimizer, device)
     model.train()
     total_loss = 0.0
     for batch in tqdm(dataloader, desc="Training Pixel Diffusion"):
-        image1 = batch["image1"].to(device)
-        image2 = batch["image2"].to(device)
-        if image1.shape[2:] != image2.shape[2:]:
-            image1 = F.interpolate(
-                image1, size=image2.shape[2:], mode="bilinear", align_corners=False
-            )
-        t = scheduler.sample_timesteps(image2.shape[0], device)
-        noise = torch.randn_like(image2)
-        noisy_image = scheduler.add_noise(image2, t, noise)
+        condition, target = _pixel_condition_and_target(batch, device)
+        t = scheduler.sample_timesteps(target.shape[0], device)
+        noise = torch.randn_like(target)
+        noisy_image = scheduler.add_noise(target, t, noise)
         t_scaled = t.float() * (1000.0 / scheduler.num_timesteps)
-        noise_pred = model(noisy_image, image1, t_scaled)
+        noise_pred = model(noisy_image, condition, t_scaled)
         loss = F.mse_loss(noise_pred, noise)
         optimizer.zero_grad()
         loss.backward()
@@ -437,39 +425,15 @@ def evaluate_diffusion(model, vae, dataloader, scheduler, device):
     total_loss = 0.0
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Diffusion"):
-            image1 = batch["image1"].to(device)
-            image2 = batch["image2"].to(device)
-            if image1.shape[2:] != image2.shape[2:]:
-                target_h, target_w = image2.shape[2], image2.shape[3]
-                image1 = F.interpolate(
-                    image1,
-                    size=(target_h, target_w),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-            condition_z = vae.encode_to_latent(image1)  # [B, latent_dim]
-            target_z = vae.encode_to_latent(image2)  # [B, latent_dim]
-
-            # Sample timesteps
+            condition_z, target_z = _latent_condition_and_target(vae, batch, device)
             t = scheduler.sample_timesteps(target_z.shape[0], device)
-
-            # Sample noise
             noise = torch.randn_like(target_z)
-
-            # Add noise to target latents
             noisy_z = scheduler.add_noise(target_z, t, noise)
-
-            # Scale timesteps for time embedding
             t_scaled = t.float() * (1000.0 / scheduler.num_timesteps)
-
-            # Predict noise
             noise_pred = model(noisy_z, condition_z, t_scaled)
-
-            # Compute loss
             loss = F.mse_loss(noise_pred, noise)
             total_loss += loss.item()
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss
+    return total_loss / len(dataloader)
 
 
 def evaluate_pixel_diffusion(model, dataloader, scheduler, device):
@@ -478,17 +442,12 @@ def evaluate_pixel_diffusion(model, dataloader, scheduler, device):
     total_loss = 0.0
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Pixel Diffusion"):
-            image1 = batch["image1"].to(device)
-            image2 = batch["image2"].to(device)
-            if image1.shape[2:] != image2.shape[2:]:
-                image1 = F.interpolate(
-                    image1, size=image2.shape[2:], mode="bilinear", align_corners=False
-                )
-            t = scheduler.sample_timesteps(image2.shape[0], device)
-            noise = torch.randn_like(image2)
-            noisy_image = scheduler.add_noise(image2, t, noise)
+            condition, target = _pixel_condition_and_target(batch, device)
+            t = scheduler.sample_timesteps(target.shape[0], device)
+            noise = torch.randn_like(target)
+            noisy_image = scheduler.add_noise(target, t, noise)
             t_scaled = t.float() * (1000.0 / scheduler.num_timesteps)
-            noise_pred = model(noisy_image, image1, t_scaled)
+            noise_pred = model(noisy_image, condition, t_scaled)
             total_loss += F.mse_loss(noise_pred, noise).item()
     return total_loss / len(dataloader)
 
