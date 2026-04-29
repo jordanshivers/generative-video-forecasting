@@ -33,7 +33,7 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
         "batch_size": {"cuda": 128, "mps": 64, "cpu": 32},
     },
     "latent_flow_matching": {
-        "context_frames": 1,
+        "context_frames": 10,
         "num_epochs": 100,
         "learning_rate": 1e-4,
         "time_emb_dim": 128,
@@ -42,7 +42,7 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
         "num_inference_steps": 50,
     },
     "latent_flow_matching_vector": {
-        "context_frames": 1,
+        "context_frames": 10,
         "num_epochs": 100,
         "learning_rate": 1e-4,
         "time_emb_dim": 128,
@@ -51,7 +51,7 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
         "num_inference_steps": 50,
     },
     "latent_diffusion_vector": {
-        "context_frames": 1,
+        "context_frames": 10,
         "num_epochs": 100,
         "num_timesteps": 200,
         "learning_rate": 1e-4,
@@ -61,7 +61,7 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
         "num_inference_steps": 100,
     },
     "pixel_flow_matching": {
-        "context_frames": 1,
+        "context_frames": 10,
         "num_epochs": 50,
         "learning_rate": 1e-4,
         "time_emb_dim": 128,
@@ -70,7 +70,7 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
         "num_inference_steps": 50,
     },
     "latent_stochastic_interpolant": {
-        "context_frames": 1,
+        "context_frames": 10,
         "num_epochs": 100,
         "learning_rate": 1e-4,
         "time_emb_dim": 128,
@@ -81,7 +81,7 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
         "beta_fn": "t^2",
     },
     "pixel_stochastic_interpolant": {
-        "context_frames": 1,
+        "context_frames": 10,
         "num_epochs": 50,
         "learning_rate": 1e-4,
         "time_emb_dim": 128,
@@ -92,7 +92,7 @@ BASELINE_PRESETS: dict[str, dict[str, Any]] = {
         "beta_fn": "t^2",
     },
     "pixel_diffusion": {
-        "context_frames": 1,
+        "context_frames": 10,
         "num_epochs": 50,
         "num_timesteps": 200,
         "learning_rate": 1e-4,
