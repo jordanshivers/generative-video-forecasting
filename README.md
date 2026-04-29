@@ -24,9 +24,11 @@ notebooks/
   moving_mnist/
     visualize_moving_mnist_data.ipynb
     train_moving_mnist_pixel_flow_matching.ipynb
+    train_moving_mnist_pixel_stochastic_interpolant.ipynb
     train_moving_mnist_pixel_diffusion.ipynb
     train_moving_mnist_simvp.ipynb
     train_moving_mnist_latent_flow_matching.ipynb
+    train_moving_mnist_latent_stochastic_interpolant.ipynb
     train_moving_mnist_latent_flow_matching_1dlatent.ipynb
     train_moving_mnist_latent_diffusion_1dlatent.ipynb
     train_moving_mnist_latent_transformer.ipynb
@@ -35,9 +37,11 @@ notebooks/
   elastic_disks/
     visualize_elastic_disks_data.ipynb
     train_elastic_disks_pixel_flow_matching.ipynb
+    train_elastic_disks_pixel_stochastic_interpolant.ipynb
     train_elastic_disks_pixel_diffusion.ipynb
     train_elastic_disks_simvp.ipynb
     train_elastic_disks_latent_flow_matching.ipynb
+    train_elastic_disks_latent_stochastic_interpolant.ipynb
     train_elastic_disks_latent_flow_matching_1dlatent.ipynb
     train_elastic_disks_latent_diffusion_1dlatent.ipynb
     train_elastic_disks_latent_transformer.ipynb
@@ -45,7 +49,7 @@ notebooks/
     train_elastic_disks_mdn_rnn_1dvaelatent.ipynb
 ```
 
-The forecasting notebooks cover pixel-space flow matching, pixel-space diffusion, SimVP, spatial latent flow matching, 1D latent flow matching, 1D latent diffusion, causal latent transformers, MDN-RNNs over spatial latents, and MDN-RNNs over 1D VAE latents. 
+The forecasting notebooks cover pixel- and latent-space flow matching, pixel- and latent-space stochastic interpolants, pixel- and latent-space diffusion, SimVP, causal latent transformers, MDN-RNNs over spatial latents, and MDN-RNNs over 1D VAE latents. 
 
 
 ## Package Layout
@@ -58,6 +62,7 @@ src/video_forecasting/
   models/
     vae.py
     flow_matching.py
+    stochastic_interpolants.py
     diffusion.py
     transformer.py
     mdn_rnn.py

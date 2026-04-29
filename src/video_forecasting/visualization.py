@@ -15,6 +15,10 @@ from .models.flow_matching import (
     sample_latent_flow_matching,
     sample_pixel_flow_matching,
 )
+from .models.stochastic_interpolants import (
+    sample_latent_stochastic_interpolant,
+    sample_pixel_stochastic_interpolant,
+)
 from .models.mdn_rnn import predict_next_frame, predict_next_frame_vector
 from .models.transformer import generate_transformer_rollout
 
@@ -288,6 +292,80 @@ def visualize_flow_predictions(
     plt.savefig(
         OUTPUT_DIR
         / f"{title_prefix.lower().replace(' ', '_')}_latent_flow_matching_predictions.png",
+        dpi=150,
+        bbox_inches="tight",
+    )
+    plt.show()
+
+
+def visualize_stochastic_interpolant_predictions(
+    drift_model,
+    vae,
+    dataset,
+    si_utils,
+    num_samples=4,
+    device="cpu",
+    title_prefix="",
+    num_inference_steps=25,
+):
+    drift_model.eval()
+    vae.eval()
+    indices = torch.randperm(len(dataset))[:num_samples]
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5 * num_samples))
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    with torch.no_grad():
+        for i, idx in enumerate(indices):
+            sample = dataset[idx]
+            image1 = sample["image1"].unsqueeze(0).to(device)
+            image2 = sample["image2"].unsqueeze(0).to(device)
+            predicted = sample_latent_stochastic_interpolant(
+                drift_model,
+                vae,
+                image1,
+                si_utils,
+                num_inference_steps=num_inference_steps,
+                device=device,
+            )
+            img1_np = image1.squeeze(0).cpu().numpy()
+            img2_np = image2.squeeze(0).cpu().numpy()
+            pred_np = predicted.squeeze(0).cpu().numpy()
+            if img1_np.shape[0] == 2:
+                img1_rgb = np.zeros((img1_np.shape[1], img1_np.shape[2], 3))
+                img1_rgb[:, :, 0] = img1_np[0]
+                img1_rgb[:, :, 1] = img1_np[1]
+                img2_rgb = np.zeros((img2_np.shape[1], img2_np.shape[2], 3))
+                img2_rgb[:, :, 0] = img2_np[0]
+                img2_rgb[:, :, 1] = img2_np[1]
+                pred_rgb = np.zeros((pred_np.shape[1], pred_np.shape[2], 3))
+                pred_rgb[:, :, 0] = pred_np[0]
+                pred_rgb[:, :, 1] = pred_np[1]
+            else:
+                img1_rgb = np.stack([img1_np[0]] * 3, axis=2)
+                img2_rgb = np.stack([img2_np[0]] * 3, axis=2)
+                pred_rgb = np.stack([pred_np[0]] * 3, axis=2)
+            axes[i, 0].imshow(np.clip(img1_rgb, 0, 1))
+            axes[i, 0].set_title(f"{title_prefix}Input Frame", fontsize=12)
+            axes[i, 0].axis("off")
+            axes[i, 1].imshow(np.clip(pred_rgb, 0, 1))
+            axes[i, 1].set_title(f"{title_prefix}Predicted Frame", fontsize=12)
+            axes[i, 1].axis("off")
+            axes[i, 2].imshow(np.clip(img2_rgb, 0, 1))
+            axes[i, 2].set_title(f"{title_prefix}Ground Truth", fontsize=12)
+            axes[i, 2].axis("off")
+            mse = np.mean((pred_np - img2_np) ** 2)
+            axes[i, 1].text(
+                0.02,
+                0.98,
+                f"MSE: {mse:.4f}",
+                transform=axes[i, 1].transAxes,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+            )
+    plt.tight_layout()
+    plt.savefig(
+        OUTPUT_DIR
+        / f"{title_prefix.lower().replace(' ', '_')}_latent_stochastic_interpolant_predictions.png",
         dpi=150,
         bbox_inches="tight",
     )
@@ -695,6 +773,132 @@ def generate_flow_rollout_movie(
         video_frames.append(composite_frame_uint8)
     base_name = f"{dataset_type}_sequence_{start_frame}"
     output_filename = output_path / f"{base_name}_latent_flow_matching_rollout.mp4"
+    print(f"Saving video to {output_filename}...")
+    imageio.mimwrite(
+        str(output_filename), video_frames, fps=fps, codec="libx264", quality=8
+    )
+    print(f"Saved video to {output_filename}")
+    return output_filename
+
+
+def generate_stochastic_interpolant_rollout_movie(
+    drift_model,
+    vae,
+    si_utils,
+    test_dataset,
+    sequence=None,
+    dataset_type="moving_mnist",
+    frame_separation=5,
+    start_frame=0,
+    num_predictions=20,
+    device="cpu",
+    fps=10,
+    output_dir=str(OUTPUT_DIR / "output_mp4s"),
+    num_inference_steps=25,
+    use_ddim=True,
+):
+    drift_model.eval()
+    vae.eval()
+    if sequence is None:
+        raise ValueError("sequence must be provided")
+    data_array = sequence
+    print(f"Using sequence with shape {data_array.shape}...")
+    T, C, H, W = data_array.shape
+    print(f"  Sequence shape: {T} frames, {C} channels, {H}x{W}")
+    if hasattr(test_dataset, "normalization_params"):
+        img_min, img_max = test_dataset.normalization_params
+    else:
+        img_min, img_max = 0.0, 1.0
+
+    def normalize_frame(frame):
+        normalized = (frame.astype(np.float32) - img_min) / (img_max - img_min)
+        return np.clip(normalized, 0, 1)
+
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+    current_frame = data_array[start_frame].copy()
+    current_frame_norm = normalize_frame(current_frame)
+    predicted_frames = []
+    ground_truth_frames = []
+    error_maps = []
+    predicted_frames.append(current_frame_norm.copy())
+    if start_frame < T:
+        ground_truth_frames.append(current_frame_norm.copy())
+    else:
+        ground_truth_frames.append(None)
+    print(f"Generating {num_predictions} prediction steps...")
+    print(f"  Starting from frame {start_frame}")
+    with torch.no_grad():
+        for step in tqdm(range(num_predictions), desc="Generating predictions"):
+            current_tensor = (
+                torch.from_numpy(current_frame_norm).float().unsqueeze(0).to(device)
+            )
+            predicted_tensor = sample_latent_stochastic_interpolant(
+                drift_model,
+                vae,
+                current_tensor,
+                si_utils,
+                num_inference_steps=num_inference_steps,
+                device=device,
+            )
+            predicted_norm = predicted_tensor.squeeze(0).cpu().numpy()
+            predicted_norm = np.clip(predicted_norm, 0, 1)
+            predicted_frames.append(predicted_norm.copy())
+            gt_frame_idx = start_frame + (step + 1) * frame_separation
+            if gt_frame_idx < T:
+                gt_frame = normalize_frame(data_array[gt_frame_idx].copy())
+                ground_truth_frames.append(gt_frame.copy())
+                error = np.abs(predicted_norm - gt_frame)
+                error_maps.append(error.copy())
+            else:
+                ground_truth_frames.append(None)
+                error_maps.append(None)
+            current_frame_norm = predicted_norm.copy()
+    print("Creating video frames...")
+    video_frames = []
+    for i in range(len(predicted_frames)):
+        pred_frame = predicted_frames[i]
+        gt_frame = ground_truth_frames[i] if i < len(ground_truth_frames) else None
+        error_map = error_maps[i - 1] if i > 0 and i - 1 < len(error_maps) else None
+        if pred_frame.shape[0] == 2:
+            pred_rgb = np.zeros((H, W, 3), dtype=np.float32)
+            pred_rgb[:, :, 0] = pred_frame[0]
+            pred_rgb[:, :, 1] = pred_frame[1]
+            if gt_frame is not None:
+                gt_rgb = np.zeros((H, W, 3), dtype=np.float32)
+                gt_rgb[:, :, 0] = gt_frame[0]
+                gt_rgb[:, :, 1] = gt_frame[1]
+            else:
+                gt_rgb = np.zeros((H, W, 3), dtype=np.float32)
+            if error_map is not None:
+                error_rgb = np.zeros((H, W, 3), dtype=np.float32)
+                error_sum = error_map.sum(axis=0)
+                error_norm = (error_sum - error_sum.min()) / (
+                    error_sum.max() - error_sum.min() + 1e-8
+                )
+                error_rgb[:, :, 0] = error_norm
+                error_rgb[:, :, 1] = error_norm * 0.5
+                error_rgb[:, :, 2] = error_norm * 0.1
+            else:
+                error_rgb = np.zeros((H, W, 3), dtype=np.float32)
+        else:
+            pred_gray = pred_frame[0]
+            pred_rgb = np.stack([pred_gray, pred_gray, pred_gray], axis=2)
+            if gt_frame is not None:
+                gt_gray = gt_frame[0]
+                gt_rgb = np.stack([gt_gray, gt_gray, gt_gray], axis=2)
+            else:
+                gt_rgb = np.zeros((H, W, 3), dtype=np.float32)
+            error_rgb = np.zeros((H, W, 3), dtype=np.float32)
+        frame_width = W * 3
+        composite_frame = np.zeros((H, frame_width, 3), dtype=np.float32)
+        composite_frame[:, :W, :] = pred_rgb
+        composite_frame[:, W : 2 * W, :] = gt_rgb
+        composite_frame[:, 2 * W : 3 * W, :] = error_rgb
+        composite_frame_uint8 = (np.clip(composite_frame, 0, 1) * 255).astype(np.uint8)
+        video_frames.append(composite_frame_uint8)
+    base_name = f"{dataset_type}_sequence_{start_frame}"
+    output_filename = output_path / f"{base_name}_latent_stochastic_interpolant_rollout.mp4"
     print(f"Saving video to {output_filename}...")
     imageio.mimwrite(
         str(output_filename), video_frames, fps=fps, codec="libx264", quality=8
@@ -1176,6 +1380,112 @@ def generate_pixel_flow_rollout_movie(
     ]
     output_file = (
         output_path / f"{dataset_type}_sequence_{start_frame}_pixel_flow_matching_rollout.mp4"
+    )
+    imageio.mimwrite(str(output_file), video_frames, fps=fps, codec="libx264", quality=8)
+    return output_file
+
+
+def visualize_pixel_stochastic_interpolant_predictions(
+    drift_model,
+    dataset,
+    si_utils,
+    num_samples=4,
+    device="cpu",
+    title_prefix="",
+    num_inference_steps=25,
+):
+    drift_model.eval()
+    indices = torch.randperm(len(dataset))[:num_samples]
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5 * num_samples))
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    with torch.no_grad():
+        for row, idx in enumerate(indices):
+            sample = dataset[idx]
+            image1 = sample["image1"].unsqueeze(0).to(device)
+            image2 = sample["image2"].unsqueeze(0).to(device)
+            predicted = sample_pixel_stochastic_interpolant(
+                drift_model,
+                image1,
+                si_utils,
+                num_inference_steps=num_inference_steps,
+                device=device,
+            )
+            img1_np = image1.squeeze(0).cpu().numpy()
+            img2_np = image2.squeeze(0).cpu().numpy()
+            pred_np = predicted.squeeze(0).cpu().numpy()
+            for col, frame, title in [
+                (0, img1_np, "Input Frame"),
+                (1, pred_np, "Predicted Frame"),
+                (2, img2_np, "Ground Truth"),
+            ]:
+                axes[row, col].imshow(np.clip(_to_rgb(frame), 0, 1))
+                axes[row, col].set_title(f"{title_prefix}{title}", fontsize=12)
+                axes[row, col].axis("off")
+            mse = np.mean((pred_np - img2_np) ** 2)
+            axes[row, 1].text(
+                0.02,
+                0.98,
+                f"MSE: {mse:.4f}",
+                transform=axes[row, 1].transAxes,
+                verticalalignment="top",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+            )
+    plt.tight_layout()
+    output_path = (
+        OUTPUT_DIR
+        / f"{title_prefix.lower().replace(' ', '_')}_pixel_stochastic_interpolant_predictions.png"
+    )
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    return output_path
+
+
+def generate_pixel_stochastic_interpolant_rollout_movie(
+    drift_model,
+    dataset,
+    si_utils,
+    sequence,
+    dataset_type="moving_mnist",
+    frame_separation=5,
+    start_frame=0,
+    num_predictions=20,
+    device="cpu",
+    fps=10,
+    output_dir=str(OUTPUT_DIR / "output_mp4s"),
+    num_inference_steps=25,
+):
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    data_array = np.asarray(sequence, dtype=np.float32)
+    current_frame = np.clip(data_array[start_frame].copy(), 0, 1)
+    predicted_frames = [current_frame.copy()]
+    ground_truth_frames = [current_frame.copy()]
+    with torch.no_grad():
+        for step in tqdm(range(num_predictions), desc="Generating predictions"):
+            current_tensor = (
+                torch.from_numpy(current_frame).float().unsqueeze(0).to(device)
+            )
+            predicted = sample_pixel_stochastic_interpolant(
+                drift_model,
+                current_tensor,
+                si_utils,
+                num_inference_steps=num_inference_steps,
+                device=device,
+            )
+            current_frame = predicted.squeeze(0).cpu().numpy()
+            predicted_frames.append(current_frame.copy())
+            gt_idx = start_frame + (step + 1) * frame_separation
+            ground_truth_frames.append(
+                data_array[gt_idx].copy() if gt_idx < len(data_array) else None
+            )
+    video_frames = [
+        _comparison_frame(pred, gt)
+        for pred, gt in zip(predicted_frames, ground_truth_frames)
+    ]
+    output_file = (
+        output_path
+        / f"{dataset_type}_sequence_{start_frame}_pixel_stochastic_interpolant_rollout.mp4"
     )
     imageio.mimwrite(str(output_file), video_frames, fps=fps, codec="libx264", quality=8)
     return output_file

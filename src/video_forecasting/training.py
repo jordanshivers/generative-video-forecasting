@@ -249,6 +249,117 @@ def evaluate_pixel_flow_matching(model, dataloader, flow_utils, device):
     return total_loss / len(dataloader)
 
 
+def train_stochastic_interpolant_epoch(model, vae, dataloader, si_utils, optimizer, device):
+    """Train stochastic interpolant drift model for one epoch (latent space)."""
+    model.train()
+    vae.eval()
+    total_loss = 0.0
+    for batch in tqdm(dataloader, desc="Training Stochastic Interpolant"):
+        image1 = batch["image1"].to(device)
+        image2 = batch["image2"].to(device)
+        if image1.shape[2:] != image2.shape[2:]:
+            target_h, target_w = image2.shape[2], image2.shape[3]
+            image1 = F.interpolate(
+                image1, size=(target_h, target_w), mode="bilinear", align_corners=False
+            )
+        with torch.no_grad():
+            condition_z = vae.encode_to_latent(image1)
+            target_z = vae.encode_to_latent(image2)
+        if condition_z.dim() == 4 and target_z.dim() == 4:
+            if condition_z.shape[2:] != target_z.shape[2:]:
+                target_h, target_w = target_z.shape[2], target_z.shape[3]
+                condition_z = F.interpolate(
+                    condition_z,
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+        elif condition_z.dim() == 2 and target_z.dim() == 2:
+            if condition_z.shape != target_z.shape:
+                raise ValueError(
+                    f"Vector latent shape mismatch: {condition_z.shape} vs {target_z.shape}"
+                )
+        loss = si_utils.compute_loss(model, target_z, condition_z)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    return total_loss / len(dataloader)
+
+
+def evaluate_stochastic_interpolant(model, vae, dataloader, si_utils, device):
+    """Evaluate stochastic interpolant drift model (latent space)."""
+    model.eval()
+    vae.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating Stochastic Interpolant"):
+            image1 = batch["image1"].to(device)
+            image2 = batch["image2"].to(device)
+            if image1.shape[2:] != image2.shape[2:]:
+                target_h, target_w = image2.shape[2], image2.shape[3]
+                image1 = F.interpolate(
+                    image1,
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            condition_z = vae.encode_to_latent(image1)
+            target_z = vae.encode_to_latent(image2)
+            if condition_z.dim() == 4 and target_z.dim() == 4:
+                if condition_z.shape[2:] != target_z.shape[2:]:
+                    target_h, target_w = target_z.shape[2], target_z.shape[3]
+                    condition_z = F.interpolate(
+                        condition_z,
+                        size=(target_h, target_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+            elif condition_z.dim() == 2 and target_z.dim() == 2:
+                if condition_z.shape != target_z.shape:
+                    raise ValueError(
+                        f"Vector latent shape mismatch: {condition_z.shape} vs {target_z.shape}"
+                    )
+            loss = si_utils.compute_loss(model, target_z, condition_z)
+            total_loss += loss.item()
+    return total_loss / len(dataloader)
+
+
+def train_pixel_stochastic_interpolant_epoch(model, dataloader, si_utils, optimizer, device):
+    """Train a pixel-space stochastic interpolant drift model for one epoch."""
+    model.train()
+    total_loss = 0.0
+    for batch in tqdm(dataloader, desc="Training Pixel Stochastic Interpolant"):
+        image1 = batch["image1"].to(device)
+        image2 = batch["image2"].to(device)
+        if image1.shape[2:] != image2.shape[2:]:
+            image1 = F.interpolate(
+                image1, size=image2.shape[2:], mode="bilinear", align_corners=False
+            )
+        loss = si_utils.compute_loss(model, image2, image1)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    return total_loss / len(dataloader)
+
+
+def evaluate_pixel_stochastic_interpolant(model, dataloader, si_utils, device):
+    """Evaluate a pixel-space stochastic interpolant drift model."""
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating Pixel Stochastic Interpolant"):
+            image1 = batch["image1"].to(device)
+            image2 = batch["image2"].to(device)
+            if image1.shape[2:] != image2.shape[2:]:
+                image1 = F.interpolate(
+                    image1, size=image2.shape[2:], mode="bilinear", align_corners=False
+                )
+            total_loss += si_utils.compute_loss(model, image2, image1).item()
+    return total_loss / len(dataloader)
+
+
 def train_diffusion_epoch(model, vae, dataloader, scheduler, optimizer, device):
     """Train diffusion model for one epoch."""
     model.train()
