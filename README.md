@@ -14,14 +14,17 @@ The current datasets are:
 
 <p align="center">
   <img src="sample_videos/elastic_disks_sequence_0_simvp_rollout.gif" alt="Autoregressive SimVP rollout: prediction, ground truth, and error." width="384" />
+  <br />
   <sub><em>Autoregressive SimVP rollout for a sample from the elastic disks dataset. Left: model-generated frames. Center: ground truth frames. Right: error map.</em></sub>
 </p>
 
 <p align="center">
   <img src="sample_videos/elastic_disks_sequence_0_pixel_stochastic_interpolant_rollout.gif" alt="Autoregressive stochastic interpolant rollout: prediction, ground truth, and error" width="384" />
-  <sub><em>Autoregressive stochastic interpolant rollout for a sample from the elastic disks dataset — see <code>notebooks/elastic_disks/train_elastic_disks_pixel_stochastic_interpolant.ipynb</code>.</em></sub>
+  <br />
+  <sub><em>Autoregressive stochastic interpolant rollout for a sample from the elastic disks dataset. Left: model-generated frames. Center: ground truth frames. Right: error map</code>.</em></sub>
 </p>
-<p align="center"><em>Autoregressive stochastic interpolant rollout for a sample from the elastic disks dataset. Left: model-generated frames. Center: ground truth frames. Right: error map.</em></p>
+
+
 ## Notebooks
 
 ```text
