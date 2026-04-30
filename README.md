@@ -1,4 +1,4 @@
-# Generative Video Forecasting
+# Forecasting time-series image data with generative models
 
 This repository implements several approaches for learned forecasting of small video datasets. 
 
