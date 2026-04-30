@@ -13,12 +13,12 @@ The current datasets are:
 | ![Sample Moving MNIST sequence](sample_videos/moving_mnist_sequence.gif) | ![Sample elastic disk sequence](sample_videos/elastic_disks_sequence.gif) |
 
 <p align="center">
-  <img src="sample_videos/elastic_disks_sequence_0_simvp_rollout.gif" width="384" alt="Autoregressive SimVP rollout: prediction, ground truth, and error (Elastic Disks, sequence 0)." />
+  <img src="sample_videos/elastic_disks_sequence_0_simvp_rollout.gif" width="384" alt="Autoregressive SimVP rollout: prediction, ground truth, and error." />
 </p>
 <p align="center"><em>Autoregressive SimVP rollout for a sample from the elastic disks dataset. Left: model-generated frames. Center: ground truth frames. Right: error map.</em></p>
 
 <p align="center">
-  <img src="sample_videos/elastic_disks_sequence_0_stochastic_interpolant_rollout.gif" width="384" alt="Autoregressive stochastic interpolant rollout: prediction, ground truth, and error (Elastic Disks, sequence 0)." />
+  <img src="sample_videos/elastic_disks_sequence_0_pixel_stochastic_interpolant_rollout.gif" width="384" alt="Autoregressive stochastic interpolant rollout: prediction, ground truth, and error." />
 </p>
 <p align="center"><em>Autoregressive stochastic interpolant rollout for a sample from the elastic disks dataset. Left: model-generated frames. Center: ground truth frames. Right: error map.</em></p>
 ## Notebooks
