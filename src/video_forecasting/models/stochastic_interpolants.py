@@ -6,6 +6,14 @@ import torch.nn.functional as F
 from .flow_matching import build_flow_mlp, build_flow_unet
 
 
+def build_stochastic_interpolant_unet(**kwargs):
+    return build_flow_unet(**kwargs)
+
+
+def build_stochastic_interpolant_mlp(**kwargs):
+    return build_flow_mlp(**kwargs)
+
+
 class StochasticInterpolant:
     def __init__(self, sigma_coef: float = 1.0, beta_fn: str = "t^2"):
         self.sigma_coef = float(sigma_coef)
